@@ -90,7 +90,7 @@ public class CenterPanel extends JPanel {
 	private final JSplitPane splitPane;
 	private final JButton clearTableButton;
 	private final JCheckBox showOnlyMarked = new JCheckBox("已标记", false);
-	private final JCheckBox showDuplicates = new JCheckBox("重复项(多维去重)", true);
+	private final JCheckBox showDuplicates = new JCheckBox("去除重复(多维)", true);
 	private final JCheckBox showBypassed = new JCheckBox("状态 " + BypassConstants.SAME.getName(), true);
 	private final JCheckBox showPotentialBypassed = new JCheckBox("状态 " + BypassConstants.SIMILAR.getName(), true);
 	private final JCheckBox showNotBypassed = new JCheckBox("状态 " + BypassConstants.DIFFERENT.getName(), true);
@@ -117,8 +117,22 @@ public class CenterPanel extends JPanel {
 		filterButton.addActionListener(e -> showTableFilterDialog(tableControlPanel));
 		filterText = new PlaceholderTextField(20);
 		filterText.setPlaceholder("输入搜索模式...");
-		searchButton.addActionListener(e -> tableModel.fireTableDataChanged());
-		showDuplicates.setToolTipText("关闭后，仅折叠完全相同的 Method+Host+完整URL（包含查询参数）");
+		searchButton.addActionListener(e -> {
+			searchButton.setEnabled(false);
+			try {
+				if (sorter != null) {
+					sorter.rebuildIndex();
+				}
+				tableModel.fireTableDataChanged();
+				if (sorter != null) {
+					sorter.sort();
+				}
+			} catch (Exception ignore) {}
+			finally {
+				searchButton.setEnabled(true);
+			}
+		});
+		showDuplicates.setToolTipText("勾选：隐藏重复请求（多维签名）；取消勾选：显示所有，包括重复");
 		JPanel searchPanel = new JPanel();
 		searchPanel.add(filterText);
 		searchPanel.add(searchButton);
@@ -447,9 +461,28 @@ public class CenterPanel extends JPanel {
 						});
 						JMenuItem deleteRowItem = new JMenuItem("删除行" + appendix);
 						deleteRowItem.addActionListener(e -> {
-							for (OriginalRequestResponse requestResponse : requestResponseList) {
-								tableModel.deleteRequestResponse(requestResponse);
+						for (OriginalRequestResponse requestResponse : requestResponseList) {
+							tableModel.deleteRequestResponse(requestResponse);
+						}
+						// 删除后确保排序/过滤与UI同步
+						SwingUtilities.invokeLater(new Runnable() {
+							@Override
+							public void run() {
+								try {
+									if (sorter != null) {
+										sorter.sort();
+									}
+								} catch (Exception ignore) {}
+								// 若无选中项，重置右侧详情面板，避免显示已删除对象
+								if (table.getSelectedRowCount() == 0) {
+									selectedId = -1;
+									diffPane.setText(TEXT_DIFF_VIEW_DEFAULT);
+									messageViewPanel.revalidate();
+								}
+								table.revalidate();
+								table.repaint();
 							}
+						});
 						});
 						JMenuItem commentItem = new JMenuItem("评论");
 						commentItem.addActionListener(e -> {
@@ -563,9 +596,8 @@ public class CenterPanel extends JPanel {
                     @Override
                     public void run() {
                         try { 
+                            // 仅排序，不在每次变更时重建全文搜索索引，降低卡顿
                             sorter.sort(); 
-                            // 重建搜索索引
-                            sorter.rebuildIndex();
                         } catch (Exception ignore) {}
                         table.revalidate();
                         table.repaint();
@@ -590,13 +622,15 @@ public class CenterPanel extends JPanel {
 	}
 	
 	public void updateAmountOfPendingRequests(int amountOfPendingRequests) {
-		if(amountOfPendingRequests == 0) {
-			pendingRequestsLabel.setVisible(false);
-		}
-		else {
-			pendingRequestsLabel.setVisible(true);
-			pendingRequestsLabel.setText("待处理请求队列: " + amountOfPendingRequests);
-		}
+		SwingUtilities.invokeLater(() -> {
+			if(amountOfPendingRequests == 0) {
+				pendingRequestsLabel.setVisible(false);
+			}
+			else {
+				pendingRequestsLabel.setVisible(true);
+				pendingRequestsLabel.setText("待处理请求队列: " + amountOfPendingRequests);
+			}
+		});
 	} 
 	
 	private void changeRequestResponseView(boolean force) {
@@ -781,6 +815,15 @@ public class CenterPanel extends JPanel {
 		inputPanel.add(searchInResponse);	
 		inputPanel.add(negativeSearch);
 		JOptionPane.showConfirmDialog(parent, inputPanel, "表格过滤", JOptionPane.CLOSED_OPTION);
+		// 对话框关闭后，立即刷新过滤结果
+		try {
+			tableModel.fireTableDataChanged();
+			if (sorter != null) {
+				sorter.sort();
+			}
+			table.revalidate();
+			table.repaint();
+		} catch (Exception ignore) {}
 		
 	}
 	

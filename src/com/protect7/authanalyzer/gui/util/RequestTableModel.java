@@ -311,6 +311,14 @@ public class RequestTableModel extends AbstractTableModel {
 		}
 		catch (Exception ignore) {}
 		originalRequestResponseList.remove(requestResponse);
+        // 删除后清理相关缓存，避免过滤/重复判断使用过期结果
+        try {
+            // 清除路径代表ID缓存（保守做法：全部清除）
+            pathToFirstIdCache.clear();
+            // 清除签名与重复缓存
+            signatureCache.remove(requestResponse.getId());
+            duplicateCache.clear();
+        } catch (Exception ignore) {}
 		SwingUtilities.invokeLater(new Runnable() {			
 			@Override
 			public void run() {

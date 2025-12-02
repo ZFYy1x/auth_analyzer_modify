@@ -34,7 +34,9 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 		showNA.addActionListener(e -> tableModel.fireTableDataChanged());
 		filterText.addActionListener(e -> tableModel.fireTableDataChanged());
 		setMaxSortKeys(1);
-        setSortKeys(Collections.singletonList(new RowSorter.SortKey(0, SortOrder.DESCENDING)));
+		setSortKeys(Collections.singletonList(new RowSorter.SortKey(0, SortOrder.DESCENDING)));
+		// 避免每次数据更新都自动重新排序，降低大数据量时的卡顿
+		setSortsOnUpdates(false);
 		
 		// 构建搜索索引
 		buildSearchIndex();
@@ -43,7 +45,6 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 			
 			public boolean include(Entry<?, ?> entry) {
 				if(filterText.getText() != null && !filterText.getText().equals("")) {
-					centerPanel.toggleSearchButtonText();
 					boolean doShow = false;
 					if(searchInPath.isSelected()) {
 						boolean contained = entry.getStringValue(3).toString().contains(filterText.getText());
@@ -81,7 +82,6 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 							e.printStackTrace();
 						}
 					}
-					centerPanel.toggleSearchButtonText();
 					if(!doShow && (searchInPath.isSelected() || searchInResponse.isSelected() || searchInRequest.isSelected())) {
 						return false;
 					}
@@ -92,11 +92,8 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 						return false;
 					}
 				}
+				// 勾选时启用去重过滤；未勾选时不过滤重复项
 				if(showDuplicates.isSelected()) {
-					// 当勾选"重复项"时，显示所有请求（包括重复的）
-					// 不进行重复检测过滤
-				} else {
-					// 当不勾选"重复项"时，隐藏重复的请求
 					int id = Integer.parseInt(entry.getStringValue(0));
 					String method = entry.getStringValue(1);
 					String host = entry.getStringValue(2);
@@ -109,7 +106,7 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 						}
 					}
 					catch (Exception ex) {}
-					// Collapse identical requests; for non-GET also include request body signature
+					// 折叠相同请求；非GET包含请求体签名
 					if(tableModel.isDuplicateByRequestSignature(id, method, host, fullUrl, requestBytes)) {
 						return false;
 					}

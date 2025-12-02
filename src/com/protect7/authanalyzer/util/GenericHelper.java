@@ -8,6 +8,7 @@ import java.awt.event.ActionListener;
 
 import javax.swing.JFrame;
 import javax.swing.JTabbedPane;
+import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import com.protect7.authanalyzer.filter.RequestFilter;
 import com.protect7.authanalyzer.gui.main.ConfigurationPanel;
@@ -69,25 +70,27 @@ public class GenericHelper {
 	}
 	
 	public static void animateBurpExtensionTab() {
-		if(BurpExtender.mainPanel.getParent() != null && BurpExtender.mainPanel.getParent() instanceof JTabbedPane) {
-			JTabbedPane burpTabbedPane = (JTabbedPane) BurpExtender.mainPanel.getParent();
-			for(int i=0; i<burpTabbedPane.getTabCount(); i++) {
-				if(burpTabbedPane.getTitleAt(i).equals(Globals.EXTENSION_NAME)) {
-					Color animationColor = new Color(240, 110, 0);
-					Color currentColor = burpTabbedPane.getForegroundAt(i);
-					final int id = i;
-					if(currentColor != null && currentColor.getRGB() != animationColor.getRGB()) {
-						burpTabbedPane.setBackgroundAt(i, animationColor);
-						Timer timer = new Timer(5000, e -> {
-							// JTabbedPane Title Color must be changed with 'setBackgorundAt' for some reason
-							burpTabbedPane.setBackgroundAt(id, currentColor);
-						});
-						timer.setRepeats(false);
-						timer.start();
+		SwingUtilities.invokeLater(() -> {
+			if(BurpExtender.mainPanel.getParent() != null && BurpExtender.mainPanel.getParent() instanceof JTabbedPane) {
+				JTabbedPane burpTabbedPane = (JTabbedPane) BurpExtender.mainPanel.getParent();
+				for(int i=0; i<burpTabbedPane.getTabCount(); i++) {
+					if(burpTabbedPane.getTitleAt(i).equals(Globals.EXTENSION_NAME)) {
+						Color animationColor = new Color(240, 110, 0);
+						Color currentColor = burpTabbedPane.getForegroundAt(i);
+						final int id = i;
+						if(currentColor != null && currentColor.getRGB() != animationColor.getRGB()) {
+							burpTabbedPane.setBackgroundAt(i, animationColor);
+							Timer timer = new Timer(5000, e -> {
+								// JTabbedPane Title Color must be changed with 'setBackgorundAt' for some reason
+								burpTabbedPane.setBackgroundAt(id, currentColor);
+							});
+							timer.setRepeats(false);
+							timer.start();
+						}
 					}
 				}
 			}
-		}
+		});
 	}
 	
 	public static Color getErrorBgColor() {
