@@ -21,6 +21,7 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JEditorPane;
 import javax.swing.JLabel;
+import javax.swing.JMenu;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -33,6 +34,7 @@ import javax.swing.JTextArea;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 import javax.swing.event.RowSorterEvent;
@@ -105,11 +107,24 @@ public class CenterPanel extends JPanel {
 	private final JCheckBox negativeSearch = new JCheckBox("反向搜索", false);
 	private final JButton searchButton = new JButton("搜索");
 	private int selectedId = -1;
+	// 合并高频变更导致的排序/重绘，降低大批量数据时的卡顿
+	private Timer sortDebounceTimer;
 
 	public CenterPanel(MainPanel mainPanel) {
 		this.mainPanel = mainPanel;
 		setLayout(new BorderLayout());
 		table = new JTable();
+		// 初始化排序防抖定时器，需在 table 初始化后使用
+		sortDebounceTimer = new Timer(120, e -> {
+			try {
+				if (sorter != null) {
+					sorter.sort();
+				}
+			} catch (Exception ignore) {}
+			table.revalidate();
+			table.repaint();
+		});
+		sortDebounceTimer.setRepeats(false);
 		tablePanel.setBorder(BorderFactory.createLineBorder(Color.gray));
 		JPanel tableControlPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 30, 5));
 		JButton filterButton = new JButton();
@@ -293,6 +308,8 @@ public class CenterPanel extends JPanel {
 		add(splitPane, BorderLayout.CENTER);
 
 		selectionModel = table.getSelectionModel();
+		// 允许 Ctrl/Command 非连续多选，避免只能 Shift 连续选择
+		selectionModel.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
 		selectionModel.addListSelectionListener(new ListSelectionListener() {
 
 			@Override
@@ -484,6 +501,20 @@ public class CenterPanel extends JPanel {
 							}
 						});
 						});
+						
+						// 发送到 Repeater 的子菜单（支持批量、带标签、自定义标签）
+						JMenu sendToRepeaterMenu = new JMenu("发送到 Repeater" + appendix);
+						String[] repeaterTags = new String[] {"水平越权", "垂直越权", "未授权"};
+						for (String tag : repeaterTags) {
+							JMenuItem sendWithTagItem = new JMenuItem(tag);
+							sendWithTagItem.addActionListener(e -> sendToRepeater(requestResponseList, tag));
+							sendToRepeaterMenu.add(sendWithTagItem);
+						}
+						JMenuItem sendCustomItem = new JMenuItem("自定义");
+						sendCustomItem.addActionListener(e -> sendWithCustomTag(requestResponseList));
+						sendToRepeaterMenu.addSeparator();
+						sendToRepeaterMenu.add(sendCustomItem);
+
 						JMenuItem commentItem = new JMenuItem("评论");
 						commentItem.addActionListener(e -> {
 							if (requestResponseList.size() > 0) {
@@ -508,12 +539,53 @@ public class CenterPanel extends JPanel {
 						}
 						contextMenu.add(repeatRequestItem);
 						contextMenu.add(deleteRowItem);
+						contextMenu.add(sendToRepeaterMenu);
 						contextMenu.add(commentItem);
 						contextMenu.show(event.getComponent(), event.getX(), event.getY());
 					}
 				}
 			}
 		});
+	}
+	
+	// 批量发送到 Repeater，并给 tab 命名（带标签区分）
+	private void sendToRepeater(ArrayList<OriginalRequestResponse> requestResponseList, String tag) {
+		for (int i = 0; i < requestResponseList.size(); i++) {
+			OriginalRequestResponse orr = requestResponseList.get(i);
+			if (orr == null || orr.getRequestResponse() == null) {
+				continue;
+			}
+			try {
+				IHttpRequestResponse ihrr = orr.getRequestResponse();
+				if (ihrr.getHttpService() == null) {
+					continue;
+				}
+				boolean useHttps = "https".equalsIgnoreCase(ihrr.getHttpService().getProtocol());
+				String tabName = tag;
+				// 批量时保证唯一性，便于在 Repeater 中区分；带标签名称模拟“分组”
+				if (requestResponseList.size() > 1) {
+					tabName = tag + "-" + orr.getId();
+				}
+				BurpExtender.callbacks.sendToRepeater(
+						ihrr.getHttpService().getHost(),
+						ihrr.getHttpService().getPort(),
+						useHttps,
+						ihrr.getRequest(),
+						tabName);
+			} catch (Exception ignore) {}
+		}
+	}
+	
+	// 弹出自定义标签输入框并发送
+	private void sendWithCustomTag(ArrayList<OriginalRequestResponse> requestResponseList) {
+		String customTag = JOptionPane.showInputDialog(this, "请输入自定义标签名称:", "发送到 Repeater - 自定义标签", JOptionPane.PLAIN_MESSAGE);
+		if (customTag != null) {
+			customTag = customTag.trim();
+		}
+		if (customTag == null || customTag.isEmpty()) {
+			return; // 取消或空输入，不发送
+		}
+		sendToRepeater(requestResponseList, customTag);
 	}
 
 	// Paint center panel according to session list
@@ -592,17 +664,12 @@ public class CenterPanel extends JPanel {
         tableModel.addTableModelListener(new TableModelListener() {
             @Override
             public void tableChanged(TableModelEvent e) {
-                SwingUtilities.invokeLater(new Runnable() {
-                    @Override
-                    public void run() {
-                        try { 
-                            // 仅排序，不在每次变更时重建全文搜索索引，降低卡顿
-                            sorter.sort(); 
-                        } catch (Exception ignore) {}
-                        table.revalidate();
-                        table.repaint();
-                    }
-                });
+				Runnable r = () -> sortDebounceTimer.restart();
+				if (SwingUtilities.isEventDispatchThread()) {
+					r.run();
+				} else {
+					SwingUtilities.invokeLater(r);
+				}
             }
         });
         updateColumnWidths();

@@ -34,7 +34,7 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 		showNA.addActionListener(e -> tableModel.fireTableDataChanged());
 		filterText.addActionListener(e -> tableModel.fireTableDataChanged());
 		setMaxSortKeys(1);
-		setSortKeys(Collections.singletonList(new RowSorter.SortKey(0, SortOrder.DESCENDING)));
+        setSortKeys(Collections.singletonList(new RowSorter.SortKey(0, SortOrder.DESCENDING)));
 		// 避免每次数据更新都自动重新排序，降低大数据量时的卡顿
 		setSortsOnUpdates(false);
 		
