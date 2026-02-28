@@ -32,6 +32,7 @@ import javax.swing.JSplitPane;
 import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.ListSelectionModel;
+import javax.swing.MenuSelectionManager;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
@@ -446,6 +447,17 @@ public class CenterPanel extends JPanel {
 					int[] rows = table.getSelectedRows();
 					if (rows.length > 0) {
 						JPopupMenu contextMenu = new JPopupMenu();
+						// Ensure the popup is dismissed before executing any action.
+						// Some actions (e.g. sending to Repeater / opening dialogs) can otherwise leave
+						// a "stuck" popup UI on top of the table.
+						final Runnable hideContextMenu = () -> {
+							try {
+								contextMenu.setVisible(false);
+							} catch (Exception ignore) {}
+							try {
+								MenuSelectionManager.defaultManager().clearSelectedPath();
+							} catch (Exception ignore) {}
+						};
 						final ArrayList<OriginalRequestResponse> requestResponseList = new ArrayList<OriginalRequestResponse>();
 						String appendix = "";
 						if (rows.length > 1) {
@@ -457,18 +469,21 @@ public class CenterPanel extends JPanel {
 						}
 						JMenuItem unmarkRowItem = new JMenuItem("取消标记行" + appendix);
 						unmarkRowItem.addActionListener(e -> {
+							hideContextMenu.run();
 							for (OriginalRequestResponse requestResponse : requestResponseList) {
 								requestResponse.setMarked(false);
 							}
 						});
 						JMenuItem markRowItem = new JMenuItem("标记行" + appendix);
 						markRowItem.addActionListener(e -> {
+							hideContextMenu.run();
 							for (OriginalRequestResponse requestResponse : requestResponseList) {
 								requestResponse.setMarked(true);
 							}
 						});
 						JMenuItem repeatRequestItem = new JMenuItem("重复请求" + appendix);
 						repeatRequestItem.addActionListener(e -> {
+							hideContextMenu.run();
 							Collections.sort(requestResponseList);
 							IHttpRequestResponse[] messages = new IHttpRequestResponse[requestResponseList.size()];
 							for (int i=0; i<requestResponseList.size(); i++) {
@@ -478,6 +493,7 @@ public class CenterPanel extends JPanel {
 						});
 						JMenuItem deleteRowItem = new JMenuItem("删除行" + appendix);
 						deleteRowItem.addActionListener(e -> {
+						hideContextMenu.run();
 						for (OriginalRequestResponse requestResponse : requestResponseList) {
 							tableModel.deleteRequestResponse(requestResponse);
 						}
@@ -507,16 +523,25 @@ public class CenterPanel extends JPanel {
 						String[] repeaterTags = new String[] {"水平越权", "垂直越权", "未授权"};
 						for (String tag : repeaterTags) {
 							JMenuItem sendWithTagItem = new JMenuItem(tag);
-							sendWithTagItem.addActionListener(e -> sendToRepeater(requestResponseList, tag));
+							sendWithTagItem.addActionListener(e -> {
+								hideContextMenu.run();
+								// Offload to background thread to keep EDT responsive and avoid popup "sticking".
+								CompletableFuture.runAsync(() -> sendToRepeater(requestResponseList, tag));
+							});
 							sendToRepeaterMenu.add(sendWithTagItem);
 						}
 						JMenuItem sendCustomItem = new JMenuItem("自定义");
-						sendCustomItem.addActionListener(e -> sendWithCustomTag(requestResponseList));
+						sendCustomItem.addActionListener(e -> {
+							hideContextMenu.run();
+							// Show dialog on EDT after the popup is dismissed.
+							SwingUtilities.invokeLater(() -> sendWithCustomTag(requestResponseList));
+						});
 						sendToRepeaterMenu.addSeparator();
 						sendToRepeaterMenu.add(sendCustomItem);
 
 						JMenuItem commentItem = new JMenuItem("评论");
 						commentItem.addActionListener(e -> {
+							hideContextMenu.run();
 							if (requestResponseList.size() > 0) {
 								JTextArea commentTextArea = new JTextArea(requestResponseList.get(0).getComment(), 2,
 										8);
@@ -578,6 +603,10 @@ public class CenterPanel extends JPanel {
 	
 	// 弹出自定义标签输入框并发送
 	private void sendWithCustomTag(ArrayList<OriginalRequestResponse> requestResponseList) {
+		// Defensive: make sure any menu selection/popup is cleared before showing dialogs.
+		try {
+			MenuSelectionManager.defaultManager().clearSelectedPath();
+		} catch (Exception ignore) {}
 		String customTag = JOptionPane.showInputDialog(this, "请输入自定义标签名称:", "发送到 Repeater - 自定义标签", JOptionPane.PLAIN_MESSAGE);
 		if (customTag != null) {
 			customTag = customTag.trim();

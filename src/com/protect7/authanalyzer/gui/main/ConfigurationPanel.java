@@ -17,6 +17,7 @@ import java.util.Scanner;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -60,8 +61,8 @@ import com.protect7.authanalyzer.gui.util.SessionTabbedPane;
 import com.protect7.authanalyzer.util.CurrentConfig;
 import com.protect7.authanalyzer.util.DataStorageProvider;
 import com.protect7.authanalyzer.util.GenericHelper;
-import com.protect7.authanalyzer.gui.util.RequestTableModel;
 import burp.BurpExtender;
+import com.protect7.authanalyzer.util.Setting;
 
 public class ConfigurationPanel extends JPanel {
 
@@ -225,6 +226,45 @@ public class ConfigurationPanel extends JPanel {
 		
 		JButton settingsButton = new JButton("设置");
 		settingsButton.addActionListener(e -> new SettingsDialog(this));
+		
+		// 二次发送协议版本：默认不改动（AUTO），可选 1.1 / 2 / 3
+		final String PROTOCOL_DEFAULT = "默认(不改动)";
+		final String PROTOCOL_HTTP11 = "HTTP/1.1";
+		final String PROTOCOL_HTTP2 = "HTTP/2";
+		final String PROTOCOL_HTTP3 = "HTTP/3";
+		JComboBox<String> protocolComboBox = new JComboBox<>(new String[] {
+				PROTOCOL_DEFAULT, PROTOCOL_HTTP11, PROTOCOL_HTTP2, PROTOCOL_HTTP3
+		});
+		protocolComboBox.setToolTipText("选择二次发送请求的 HTTP 协议版本（默认不改动请求行）");
+		protocolComboBox.putClientProperty("html.disable", null);
+		// 恢复上次选择
+		String stored = Setting.getValueAsString(Setting.Item.FORCE_HTTP_VERSION);
+		if (stored == null || stored.trim().isEmpty() || stored.equalsIgnoreCase("AUTO")) {
+			protocolComboBox.setSelectedItem(PROTOCOL_DEFAULT);
+		} else if (stored.trim().equals("1.1")) {
+			protocolComboBox.setSelectedItem(PROTOCOL_HTTP11);
+		} else if (stored.trim().equals("2")) {
+			protocolComboBox.setSelectedItem(PROTOCOL_HTTP2);
+		} else if (stored.trim().equals("3")) {
+			protocolComboBox.setSelectedItem(PROTOCOL_HTTP3);
+		} else {
+			protocolComboBox.setSelectedItem(PROTOCOL_DEFAULT);
+		}
+		protocolComboBox.addActionListener(new ActionListener() {
+			@Override
+			public void actionPerformed(ActionEvent e) {
+				String selected = (String) protocolComboBox.getSelectedItem();
+				String valueToStore = "AUTO";
+				if (PROTOCOL_HTTP11.equals(selected)) {
+					valueToStore = "1.1";
+				} else if (PROTOCOL_HTTP2.equals(selected)) {
+					valueToStore = "2";
+				} else if (PROTOCOL_HTTP3.equals(selected)) {
+					valueToStore = "3";
+				}
+				Setting.setValue(Setting.Item.FORCE_HTTP_VERSION, valueToStore);
+			}
+		});
 
 		setLayout(new GridBagLayout());
 		JPanel startStopButtonPanel = new JPanel();
@@ -246,6 +286,10 @@ public class ConfigurationPanel extends JPanel {
 		startStopButtonPanel.add(new JLabel(" "), c1);
 		c1.gridy = 4;
 		startStopButtonPanel.add(settingsButton, c1);
+		c1.gridy = 5;
+		// 下拉框大小/宽度与“设置”按钮一致
+		protocolComboBox.setPreferredSize(settingsButton.getPreferredSize());
+		startStopButtonPanel.add(protocolComboBox, c1);
 		
 		GridBagConstraints c = new GridBagConstraints();
 		c.gridx = 0;

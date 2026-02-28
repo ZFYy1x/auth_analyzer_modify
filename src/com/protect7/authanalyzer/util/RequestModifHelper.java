@@ -1,9 +1,6 @@
 package com.protect7.authanalyzer.util;
 
 import java.io.StringReader;
-import java.io.UnsupportedEncodingException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -29,6 +26,49 @@ import burp.IRequestInfo;
 
 public class RequestModifHelper {
 	
+	public static List<String> applyHttpProtocolVersionOverride(List<String> headers) {
+		if (headers == null || headers.isEmpty()) {
+			return headers;
+		}
+		String mode = Setting.getValueAsString(Setting.Item.FORCE_HTTP_VERSION);
+		if (mode == null) {
+			return headers;
+		}
+		mode = mode.trim();
+		if (mode.isEmpty() || mode.equalsIgnoreCase("AUTO")) {
+			return headers;
+		}
+
+		// 支持 1.1 / 2 / 3。最终拼成 HTTP/<mode>
+		String targetVersionToken = "HTTP/" + mode;
+
+		String requestLine = headers.get(0);
+		if (requestLine == null) {
+			return headers;
+		}
+		int firstSpace = requestLine.indexOf(' ');
+		if (firstSpace == -1) {
+			return headers;
+		}
+		int lastSpace = requestLine.lastIndexOf(' ');
+		String newRequestLine = requestLine;
+		if (lastSpace > firstSpace) {
+			String lastToken = requestLine.substring(lastSpace + 1);
+			if (lastToken.toUpperCase().startsWith("HTTP/")) {
+				newRequestLine = requestLine.substring(0, lastSpace + 1) + targetVersionToken;
+			} else {
+				// 不符合预期格式时，保守追加
+				newRequestLine = requestLine + " " + targetVersionToken;
+			}
+		} else {
+			newRequestLine = requestLine + " " + targetVersionToken;
+		}
+		if (!newRequestLine.equals(requestLine)) {
+			headers.set(0, newRequestLine);
+		}
+		return headers;
+	}
+
 	public static List<String> getModifiedHeaders(List<String> currentHeaders, Session session) {
 		List<String> headers = currentHeaders;
 		// Check for Parameter Replacement in Path

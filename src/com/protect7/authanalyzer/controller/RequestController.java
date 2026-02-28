@@ -76,6 +76,8 @@ public class RequestController {
 							modifiedRequestInfo.getBodyOffset(), modifiedRequest.length);
 
 					List<String> modifiedHeaders = RequestModifHelper.getModifiedHeaders(modifiedRequestInfo.getHeaders(), session);
+					// 可选：根据 UI 下拉框强制改写请求行里的 HTTP 版本（解决从 Repeater 来的 HTTP/2 请求行导致 505 的情况）
+					RequestModifHelper.applyHttpProtocolVersionOverride(modifiedHeaders);
 					byte[] message = BurpExtender.callbacks.getHelpers().buildHttpMessage(modifiedHeaders, modifiedMessageBody);
 
 					// Perform modified request

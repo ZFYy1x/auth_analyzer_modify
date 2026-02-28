@@ -67,6 +67,8 @@ public class Setting {
 				Type.ARRAY, "静态模式（用于自动设置参数）", null),
 		AUTOSET_PARAM_DYNAMIC_PATTERNS("viewstate,eventvalidation,requestverificationtoken", Type.ARRAY,
 				"动态模式（用于自动设置参数）", null),
+		FORCE_HTTP_VERSION("AUTO", Type.STRING,
+				"二次发送请求的 HTTP 协议版本（AUTO=不改动；可选 1.1/2/3）", null),
 		NUMBER_OF_THREADS("5", Type.INTEGER, "线程数量（用于请求处理）", new Range(1,50)),
 		DELAY_BETWEEN_REQUESTS("0", Type.INTEGER, "请求间延迟（毫秒）", new Range(0,60000)),
 		ONLY_ONE_THREAD_IF_PROMT_FOR_INPUT("true", Type.BOOLEAN, 

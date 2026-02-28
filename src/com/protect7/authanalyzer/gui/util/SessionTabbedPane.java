@@ -138,30 +138,46 @@ public class SessionTabbedPane extends JTabbedPane {
 			titleLabel.addMouseListener(new MouseAdapter() {
 				@Override
 				public void mouseReleased(MouseEvent event) {
-					JPopupMenu contextMenu = new JPopupMenu();
-					JMenuItem newSessionItem = new JMenuItem("Add New Session");
-					newSessionItem.addActionListener(new ActionListener() {
-						
-						@Override
-						public void actionPerformed(ActionEvent e) {
-							if(canModify() && newSessionListener != null) {
-								newSessionListener.newSession();
+					if (event.getButton() == MouseEvent.BUTTON3) {
+						JPopupMenu contextMenu = new JPopupMenu();
+						// 在执行任何菜单动作前，优先关闭弹出菜单，避免菜单残留在看板 UI 上
+						final Runnable hideContextMenu = () -> {
+							try {
+								contextMenu.setVisible(false);
+							} catch (Exception ignore) {}
+							try {
+								javax.swing.MenuSelectionManager.defaultManager().clearSelectedPath();
+							} catch (Exception ignore) {}
+						};
+
+						JMenuItem newSessionItem = new JMenuItem("Add New Session");
+						newSessionItem.addActionListener(new ActionListener() {
+
+							@Override
+							public void actionPerformed(ActionEvent e) {
+								hideContextMenu.run();
+								if (canModify() && newSessionListener != null) {
+									newSessionListener.newSession();
+								}
 							}
-						}
-					});
-					contextMenu.add(newSessionItem);
-					JMenuItem cloneSessionItem = new JMenuItem("Clone Selected Session");
-					cloneSessionItem.addActionListener(new ActionListener() {
-						
-						@Override
-						public void actionPerformed(ActionEvent e) {
-							if(canModify() && cloneSessionListener != null) {
-								cloneSessionListener.cloneSession();
+						});
+						contextMenu.add(newSessionItem);
+						JMenuItem cloneSessionItem = new JMenuItem("Clone Selected Session");
+						cloneSessionItem.addActionListener(new ActionListener() {
+
+							@Override
+							public void actionPerformed(ActionEvent e) {
+								hideContextMenu.run();
+								if (canModify() && cloneSessionListener != null) {
+									cloneSessionListener.cloneSession();
+								}
 							}
-						}
-					});
-					contextMenu.add(cloneSessionItem);
-					contextMenu.show(event.getComponent(), event.getX(), event.getY());
+						});
+						contextMenu.add(cloneSessionItem);
+						contextMenu.show(event.getComponent(), event.getX(), event.getY());
+					} else {
+						super.mouseReleased(event);
+					}
 				}
 			});
 		}
