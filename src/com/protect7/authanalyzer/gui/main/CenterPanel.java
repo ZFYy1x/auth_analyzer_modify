@@ -323,7 +323,7 @@ public class CenterPanel extends JPanel {
 						
 						// 发送到 Repeater 的子菜单（支持批量、带标签、自定义标签）
 						JMenu sendToRepeaterMenu = new JMenu("发送到 Repeater" + appendix);
-						String[] repeaterTags = new String[] {"水平越权", "垂直越权", "未授权"};
+						String[] repeaterTags = new String[] {"水平越权", "垂直越权", "未授权", "水平垂直", "水平垂直未授权"};
 						for (String tag : repeaterTags) {
 							JMenuItem sendWithTagItem = new JMenuItem(tag);
 							sendWithTagItem.addActionListener(e -> {
