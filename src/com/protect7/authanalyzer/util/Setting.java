@@ -54,11 +54,11 @@ public class Setting {
 	}
 	
 	public static void setValue(Item settingItem, String value) {
-		BurpExtender.callbacks.saveExtensionSetting(settingItem.toString(), value);
+		BurpExtender.api.persistence().preferences().setString(settingItem.toString(), value);
 	}
 	
 	private static String getPersistentSetting(String name) {
-		return BurpExtender.callbacks.loadExtensionSetting(name);
+		return BurpExtender.api.persistence().preferences().getString(name);
 	}
 
 	

@@ -123,7 +123,7 @@ public class Session {
 				if(field.getDeclaringClass() == Session.class && field.getName().equals("statusPanel")) {
 					return true;
 				}
-				if(field.getDeclaringClass() == Token.class && field.getName().equals("request")) {
+				if(field.getDeclaringClass() == Token.class && field.getName().equals("requestResponse")) {
 					return true;
 				}
 				return false;

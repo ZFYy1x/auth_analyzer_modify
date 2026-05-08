@@ -8,18 +8,17 @@ package com.protect7.authanalyzer.entities;
 
 
 import com.protect7.authanalyzer.util.BypassConstants;
-
-import burp.IHttpRequestResponse;
+import com.protect7.authanalyzer.montoya.HttpExchange;
 
 public class AnalyzerRequestResponse {
 
-	private final IHttpRequestResponse requestResponse;
+	private final HttpExchange requestResponse;
 	private final BypassConstants status;
 	private final String infoText;
 	private final int statusCode;
 	private final int responseContentLength;
 
-	public AnalyzerRequestResponse(IHttpRequestResponse requestResponse, BypassConstants status, String infoText,
+	public AnalyzerRequestResponse(HttpExchange requestResponse, BypassConstants status, String infoText,
 			int statusCode, int responseContentLength) {
 		this.requestResponse = requestResponse;
 		this.status = status;
@@ -28,7 +27,7 @@ public class AnalyzerRequestResponse {
 		this.responseContentLength = responseContentLength;
 	}
 
-	public IHttpRequestResponse getRequestResponse() {
+	public HttpExchange getRequestResponse() {
 		return requestResponse;
 	}
 

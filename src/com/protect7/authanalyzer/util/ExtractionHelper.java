@@ -5,15 +5,16 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
+
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -23,41 +24,112 @@ import com.protect7.authanalyzer.entities.FromToExtractLocation;
 import com.protect7.authanalyzer.entities.Token;
 import com.protect7.authanalyzer.entities.TokenBuilder;
 import com.protect7.authanalyzer.entities.TokenLocation;
-import burp.BurpExtender;
-import burp.ICookie;
-import burp.IHttpRequestResponse;
-import burp.IParameter;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
+import com.protect7.authanalyzer.montoya.HttpExchange;
+import com.protect7.authanalyzer.montoya.MontoyaUtils;
+
+import burp.api.montoya.http.message.Cookie;
+import burp.api.montoya.http.message.params.HttpParameterType;
+import burp.api.montoya.http.message.params.ParsedHttpParameter;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 public class ExtractionHelper {
 
-	public static boolean extractCurrentTokenValue(byte[] sessionResponse, IResponseInfo sessionResponseInfo, Token token) {
+	public static ResponseExtractionContext responseContext(HttpResponse responseInfo) {
+		return new ResponseExtractionContext(responseInfo);
+	}
+
+	public static class ResponseExtractionContext {
+		private final HttpResponse responseInfo;
+		private byte[] responseBytes;
+		private String fullResponseAsString;
+		private String headerAsString;
+		private String bodyAsString;
+
+		private ResponseExtractionContext(HttpResponse responseInfo) {
+			this.responseInfo = responseInfo;
+		}
+
+		public HttpResponse responseInfo() {
+			return responseInfo;
+		}
+
+		public byte[] responseBytes() {
+			if (responseBytes == null) {
+				responseBytes = responseInfo.toByteArray().getBytes();
+			}
+			return responseBytes;
+		}
+
+		public int bodyOffset() {
+			byte[] bytes = responseBytes();
+			int bodyOffset = responseInfo.bodyOffset();
+			if (bodyOffset < 0) {
+				return 0;
+			}
+			if (bodyOffset > bytes.length) {
+				return bytes.length;
+			}
+			return bodyOffset;
+		}
+
+		public int bodyLength() {
+			return responseBytes().length - bodyOffset();
+		}
+
+		public String fullResponseAsString() {
+			if (fullResponseAsString == null) {
+				fullResponseAsString = new String(responseBytes());
+			}
+			return fullResponseAsString;
+		}
+
+		public String headerAsString() {
+			if (headerAsString == null) {
+				headerAsString = new String(responseBytes(), 0, bodyOffset());
+			}
+			return headerAsString;
+		}
+
+		public String bodyAsString() {
+			if (bodyAsString == null) {
+				byte[] bytes = responseBytes();
+				int bodyOffset = bodyOffset();
+				bodyAsString = new String(bytes, bodyOffset, bytes.length - bodyOffset);
+			}
+			return bodyAsString;
+		}
+	}
+
+	public static boolean extractCurrentTokenValue(HttpResponse sessionResponseInfo, Token token) {
+		return extractCurrentTokenValue(responseContext(sessionResponseInfo), token);
+	}
+
+	public static boolean extractCurrentTokenValue(ResponseExtractionContext sessionResponseContext, Token token) {
+		HttpResponse sessionResponseInfo = sessionResponseContext.responseInfo();
 		if(token.doAutoExtractAtLocation(AutoExtractLocation.COOKIE)) {
-			for (ICookie cookie : sessionResponseInfo.getCookies()) {
-				if (cookie.getName().equals(token.getExtractName())) {
-					token.setValue(cookie.getValue());
+			for (Cookie cookie : sessionResponseInfo.cookies()) {
+				if (cookie.name().equals(token.getExtractName())) {
+					token.setValue(cookie.value());
 					return true;
 				}
 			}
 		}
-		if (token.doAutoExtractAtLocation(AutoExtractLocation.HTML) && (sessionResponseInfo.getStatedMimeType().equals("HTML")
-				|| sessionResponseInfo.getInferredMimeType().equals("HTML"))) {
+		if (token.doAutoExtractAtLocation(AutoExtractLocation.HTML) && (MontoyaUtils.mimeName(sessionResponseInfo.statedMimeType()).equals("HTML")
+				|| MontoyaUtils.mimeName(sessionResponseInfo.inferredMimeType()).equals("HTML"))) {
 			try {
-				String bodyAsString = new String(Arrays.copyOfRange(sessionResponse,
-						sessionResponseInfo.getBodyOffset(), sessionResponse.length));
-				String value = getTokenValueFromInputField(bodyAsString, token.getExtractName());
+				String value = getTokenValueFromInputField(sessionResponseContext.bodyAsString(), token.getExtractName());
 				if (value != null) {
 					token.setValue(value);
 					return true;
 				}
 			} catch (Exception e) {
-				BurpExtender.callbacks.printError("Can not parse HTML Response. Error Message: " + e.getMessage());
+				MontoyaUtils.logError("Can not parse HTML Response. Error Message: " + e.getMessage());
 			}
 		}
-		if (token.doAutoExtractAtLocation(AutoExtractLocation.JSON) && (sessionResponseInfo.getStatedMimeType().equals("JSON")
-				|| sessionResponseInfo.getInferredMimeType().equals("JSON"))) {
-			JsonElement jsonElement = getBodyAsJson(sessionResponse, sessionResponseInfo);
+		if (token.doAutoExtractAtLocation(AutoExtractLocation.JSON) && (MontoyaUtils.mimeName(sessionResponseInfo.statedMimeType()).equals("JSON")
+				|| MontoyaUtils.mimeName(sessionResponseInfo.inferredMimeType()).equals("JSON"))) {
+			JsonElement jsonElement = getBodyAsJson(sessionResponseContext);
 			if(jsonElement != null) {
 				String value = getJsonTokenValue(jsonElement, token);
 				if (value != null) {
@@ -85,32 +157,37 @@ public class ExtractionHelper {
 		return null;
 	}
 
-	public static boolean extractTokenWithFromToString(byte[] sessionResponse, IResponseInfo responseInfo, Token token) {
+	public static boolean extractTokenWithFromToString(HttpResponse responseInfo, Token token) {
+		return extractTokenWithFromToString(responseContext(responseInfo), token);
+	}
+
+	public static boolean extractTokenWithFromToString(ResponseExtractionContext responseContext, Token token) {
+		HttpResponse responseInfo = responseContext.responseInfo();
 		try {
 			boolean doExtract = token.doFromToExtractAtLocation(FromToExtractLocation.ALL);
 			for(FromToExtractLocation locationType : FromToExtractLocation.values()) {
 				if(locationType != FromToExtractLocation.ALL && locationType != FromToExtractLocation.HEADER && locationType != FromToExtractLocation.BODY) {
-					if (token.doFromToExtractAtLocation(locationType) && (responseInfo.getStatedMimeType().toUpperCase().equals(locationType.toString())
-							|| responseInfo.getInferredMimeType().toUpperCase().equals(locationType.toString()))) {
+					if (token.doFromToExtractAtLocation(locationType) && (MontoyaUtils.mimeName(responseInfo.statedMimeType()).toUpperCase().equals(locationType.toString())
+							|| MontoyaUtils.mimeName(responseInfo.inferredMimeType()).toUpperCase().equals(locationType.toString()))) {
 						doExtract = true;
 						break;
 					}
 				}
 			}
-			//Do extract per default if stated and interfered MIME Type can not be evaluated (e.g. redirect response without body content)
-			if(responseInfo.getInferredMimeType().equals("") && responseInfo.getStatedMimeType().equals("")) {
+			//Do extract per default if stated and inferred MIME Type can not be evaluated (e.g. redirect response without body content)
+			if(MontoyaUtils.mimeName(responseInfo.inferredMimeType()).equals("") && MontoyaUtils.mimeName(responseInfo.statedMimeType()).equals("")) {
 				doExtract = true;
 			}
 			if(doExtract) {
 				String responseAsString = null;
 				if(token.doFromToExtractAtLocation(FromToExtractLocation.HEADER) && token.doFromToExtractAtLocation(FromToExtractLocation.BODY)) {
-					responseAsString = new String(sessionResponse);
+					responseAsString = responseContext.fullResponseAsString();
 				}
 				else if(token.doFromToExtractAtLocation(FromToExtractLocation.HEADER) && !token.doFromToExtractAtLocation(FromToExtractLocation.BODY)) {
-					responseAsString = new String(Arrays.copyOfRange(sessionResponse, 0, responseInfo.getBodyOffset()));
+					responseAsString = responseContext.headerAsString();
 				}
 				else if(!token.doFromToExtractAtLocation(FromToExtractLocation.HEADER) && token.doFromToExtractAtLocation(FromToExtractLocation.BODY)) {
-					responseAsString = new String(Arrays.copyOfRange(sessionResponse, responseInfo.getBodyOffset(), sessionResponse.length));
+					responseAsString = responseContext.bodyAsString();
 				}
 				if(responseAsString != null) {
 					int beginIndex = responseAsString.indexOf(token.getGrepFromString());
@@ -134,7 +211,7 @@ public class ExtractionHelper {
 				}
 			}
 		} catch (Exception e) {
-			BurpExtender.callbacks.printError("Can not extract from to value. Error Message: " + e.getMessage());
+			MontoyaUtils.logError("Can not extract from to value. Error Message: " + e.getMessage());
 		}
 		return false;
 	}
@@ -144,7 +221,10 @@ public class ExtractionHelper {
 			JsonObject jsonObject = jsonElement.getAsJsonObject();
 			for (Map.Entry<String, JsonElement> entry : jsonObject.entrySet()) {
 				if (entry.getValue().isJsonArray() || entry.getValue().isJsonObject()) {
-					return getJsonTokenValue(entry.getValue(), token);
+					String value = getJsonTokenValue(entry.getValue(), token);
+					if (value != null) {
+						return value;
+					}
 				}
 				if (entry.getValue().isJsonPrimitive()) {
 					if (entry.getKey().equals(token.getExtractName())) {
@@ -155,46 +235,51 @@ public class ExtractionHelper {
 		}
 		if (jsonElement.isJsonArray()) {
 			for (JsonElement arrayJsonEl : jsonElement.getAsJsonArray()) {
-				if (arrayJsonEl.isJsonObject()) {
-					return getJsonTokenValue(arrayJsonEl.getAsJsonObject(), token);
+				if (arrayJsonEl.isJsonArray() || arrayJsonEl.isJsonObject()) {
+					String value = getJsonTokenValue(arrayJsonEl, token);
+					if (value != null) {
+						return value;
+					}
 				}
 			}
 		}
 		return null;
 	}
 	
-	private static JsonElement getBodyAsJson(byte[] response, IResponseInfo responseInfo) {
+	private static JsonElement getBodyAsJson(HttpResponse responseInfo) {
+		return getBodyAsJson(responseContext(responseInfo));
+	}
+
+	private static JsonElement getBodyAsJson(ResponseExtractionContext responseContext) {
 		try {
-			String bodyAsString = new String(Arrays.copyOfRange(response,
-					responseInfo.getBodyOffset(), response.length));
-			JsonReader reader = new JsonReader(new StringReader(bodyAsString));
+			JsonReader reader = new JsonReader(new StringReader(responseContext.bodyAsString()));
 			reader.setLenient(true);
 			JsonElement jsonElement = JsonParser.parseReader(reader);
 			return jsonElement;
 		} catch (Exception e) {
-			BurpExtender.callbacks.printError("Can not parse JSON Response. Error Message: " + e.getMessage());
+			MontoyaUtils.logError("Can not parse JSON Response. Error Message: " + e.getMessage());
 		}
 		return null;
 	}
 	
-	public static ArrayList<Token> extractTokensFromMessages(IHttpRequestResponse[] messages) {
+	public static ArrayList<Token> extractTokensFromMessages(HttpExchange[] messages) {
 		HashMap<String, Token> tokenMap = new HashMap<String, Token>();
 		String[] staticPatterns = Setting.getValueAsArray(Setting.Item.AUTOSET_PARAM_STATIC_PATTERNS);
 		String[] dynamicPatterns = Setting.getValueAsArray(Setting.Item.AUTOSET_PARAM_DYNAMIC_PATTERNS);
-		for(IHttpRequestResponse message : messages) {
+		for(HttpExchange message : messages) {
 			if(message.getRequest() != null) {
-				IRequestInfo requestInfo = BurpExtender.callbacks.getHelpers().analyzeRequest(message.getRequest());
-				for(IParameter param : requestInfo.getParameters()) {
+				HttpRequest requestInfo = message.getRequest();
+				for(ParsedHttpParameter param : requestInfo.parameters()) {
 					boolean process = false;
 					boolean isDynamic = false;
 					for(String pattern : staticPatterns) {
-						if(param.getName().toLowerCase().contains(pattern)) {
+						if(param.name().toLowerCase().contains(pattern)) {
 							process = true;
 							break;
 						}
 					}
 					for(String pattern : dynamicPatterns) {
-						if(param.getName().toLowerCase().contains(pattern)) {
+						if(param.name().toLowerCase().contains(pattern)) {
 							process = true;
 							isDynamic = true;
 							break;
@@ -202,34 +287,34 @@ public class ExtractionHelper {
 					}
 					if(process) {
 						boolean autoExtract = isDynamic;
-						if(tokenMap.containsKey(param.getName())) {
-							autoExtract = tokenMap.get(param.getName()).isAutoExtract();
+						if(tokenMap.containsKey(param.name())) {
+							autoExtract = tokenMap.get(param.name()).isAutoExtract();
 						}
 						Token token = null;
 						String urlDecodedName;
 						try {
-							urlDecodedName = URLDecoder.decode(param.getName(), StandardCharsets.UTF_8.toString());
+							urlDecodedName = URLDecoder.decode(param.name(), StandardCharsets.UTF_8.toString());
 						} catch (UnsupportedEncodingException e) {
-							urlDecodedName = param.getName();
+							urlDecodedName = param.name();
 						}
 						String urlDecodedValue;
 						try {
-							urlDecodedValue = URLDecoder.decode(param.getValue(), StandardCharsets.UTF_8.toString());
+							urlDecodedValue = URLDecoder.decode(param.value(), StandardCharsets.UTF_8.toString());
 						} catch (UnsupportedEncodingException e) {
-							urlDecodedValue = param.getValue();
+							urlDecodedValue = param.value();
 						}
-						if(param.getType() == IParameter.PARAM_COOKIE) {
+						if(param.type() == HttpParameterType.COOKIE) {
 							// Create Token with dynamic value
 							token = new TokenBuilder()
 									.setName(urlDecodedName)
 									.setTokenLocationSet(EnumSet.of(TokenLocation.COOKIE))
 									.setAutoExtractLocationSet(EnumSet.of(AutoExtractLocation.COOKIE))
-									.setValue(param.getValue())
-									.setExtractName(param.getName())
+									.setValue(param.value())
+									.setExtractName(param.name())
 									.setIsAutoExtract(true)
 									.build();
 						}
-						if(param.getType() == IParameter.PARAM_URL) {
+						if(param.type() == HttpParameterType.URL) {
 							// Create Token with static value
 							token = new TokenBuilder()
 									.setName(urlDecodedName)
@@ -241,7 +326,7 @@ public class ExtractionHelper {
 									.setIsStaticValue(!autoExtract)
 									.build();
 						}
-						if(param.getType() == IParameter.PARAM_BODY) {
+						if(param.type() == HttpParameterType.BODY) {
 							// Create Token with static value
 							token = new TokenBuilder()
 									.setName(urlDecodedName)
@@ -253,7 +338,7 @@ public class ExtractionHelper {
 									.setIsStaticValue(!autoExtract)
 									.build();
 						}
-						if(param.getType() == IParameter.PARAM_JSON) {
+						if(param.type() == HttpParameterType.JSON) {
 							token = new TokenBuilder()
 									.setName(urlDecodedName)
 									.setTokenLocationSet(EnumSet.of(TokenLocation.JSON))
@@ -271,19 +356,20 @@ public class ExtractionHelper {
 				}
 			}
 			if(message.getResponse() != null) {
-				IResponseInfo responseInfo = BurpExtender.callbacks.getHelpers().analyzeResponse(message.getResponse());
-				for(ICookie cookie : responseInfo.getCookies()) {
+				HttpResponse responseInfo = message.getResponse();
+				ResponseExtractionContext responseSnapshot = responseContext(responseInfo);
+				for(Cookie cookie : responseInfo.cookies()) {
 					Token token = new TokenBuilder()
-							.setName(cookie.getName())
+							.setName(cookie.name())
 							.setTokenLocationSet(EnumSet.of(TokenLocation.COOKIE))
 							.setAutoExtractLocationSet(EnumSet.of(AutoExtractLocation.COOKIE))
-							.setExtractName(cookie.getName())
+							.setExtractName(cookie.name())
 							.setIsAutoExtract(true)
 							.build();
 					tokenMap.put(token.getName(), token);
 				}
-				if(responseInfo.getStatedMimeType().equals("JSON")	|| responseInfo.getInferredMimeType().equals("JSON")) {
-					JsonElement jsonElement = getBodyAsJson(message.getResponse(), responseInfo);
+				if(MontoyaUtils.mimeName(responseInfo.statedMimeType()).equals("JSON") || MontoyaUtils.mimeName(responseInfo.inferredMimeType()).equals("JSON")) {
+					JsonElement jsonElement = getBodyAsJson(responseSnapshot);
 					if(jsonElement != null) {
 						createTokensFromJson(jsonElement, tokenMap);
 					}
@@ -300,7 +386,7 @@ public class ExtractionHelper {
 			JsonObject jsonObject = jsonElement.getAsJsonObject();
 			for (Map.Entry<String, JsonElement> entry : jsonObject.entrySet()) {
 				if (entry.getValue().isJsonArray() || entry.getValue().isJsonObject()) {
-					createTokensFromJson(jsonElement, tokenMap);
+					createTokensFromJson(entry.getValue(), tokenMap);
 				}
 				if (entry.getValue().isJsonPrimitive()) {
 					String[] staticPatterns = Setting.getValueAsArray(Setting.Item.AUTOSET_PARAM_STATIC_PATTERNS);
@@ -322,8 +408,8 @@ public class ExtractionHelper {
 		}
 		if (jsonElement.isJsonArray()) {
 			for (JsonElement arrayJsonEl : jsonElement.getAsJsonArray()) {
-				if (arrayJsonEl.isJsonObject()) {
-					createTokensFromJson(jsonElement, tokenMap);
+				if (arrayJsonEl.isJsonArray() || arrayJsonEl.isJsonObject()) {
+					createTokensFromJson(arrayJsonEl, tokenMap);
 				}
 			}
 		}

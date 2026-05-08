@@ -211,7 +211,7 @@ public class ConfigurationPanel extends JPanel {
 				try {
 					startStopButtonPressed();
 				} catch (Exception ex) {
-					ex.printStackTrace(new PrintWriter(BurpExtender.callbacks.getStdout()));
+					ex.printStackTrace(new PrintWriter(BurpExtender.api.logging().output()));
 				}
 
 			}
@@ -317,7 +317,7 @@ public class ConfigurationPanel extends JPanel {
 				mainPanel.updateDividerLocation();
 			}
 		} catch (Exception e) {
-			BurpExtender.callbacks.printOutput("Can not restore saved Data. Error Message: " + e.getMessage());
+			BurpExtender.api.logging().logToOutput("Can not restore saved Data. Error Message: " + e.getMessage());
 		}
 		if(sessionTabbedPane.getTabCount() == 1) {
 			createSession("user1");
@@ -349,7 +349,7 @@ public class ConfigurationPanel extends JPanel {
 				writer.close();
 				JOptionPane.showMessageDialog(this, "成功保存到\n" + file.getAbsolutePath());
 			} catch (Exception e) {
-				BurpExtender.callbacks.printError("错误。无法写入设置到JSON文件。 " + e.getMessage());
+				BurpExtender.api.logging().logToError("错误。无法写入设置到JSON文件。 " + e.getMessage());
 				JOptionPane.showMessageDialog(this, "错误。\n无法写入设置到JSON文件。");
 			}
 		}
@@ -375,7 +375,7 @@ public class ConfigurationPanel extends JPanel {
 						mainPanel.updateDividerLocation();
 						JOptionPane.showMessageDialog(this, "设置加载成功");
 					} catch (Exception e) {
-						BurpExtender.callbacks.printError("错误。无法从JSON文件加载设置。 " + e.getMessage());
+						BurpExtender.api.logging().logToError("错误。无法从JSON文件加载设置。 " + e.getMessage());
 						JOptionPane.showMessageDialog(this, "错误。\n无法从JSON文件加载设置。");
 					}
 				}
@@ -575,7 +575,7 @@ public class ConfigurationPanel extends JPanel {
 					try {
 						DataStorageProvider.saveSetup();
 					} catch (Exception e) {
-						BurpExtender.callbacks.printOutput("无法保存设置。错误信息: " + e.getMessage());
+						BurpExtender.api.logging().logToOutput("无法保存设置。错误信息: " + e.getMessage());
 					}
 					
 					for (RequestFilter filter : config.getRequestFilterList()) {

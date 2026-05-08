@@ -4,22 +4,19 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.FlowLayout;
-import java.awt.GridBagConstraints;
-import java.awt.GridBagLayout;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
-import javax.swing.JEditorPane;
 import javax.swing.JLabel;
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
@@ -53,15 +50,14 @@ import com.protect7.authanalyzer.gui.util.RequestTableModel;
 import com.protect7.authanalyzer.gui.util.RequestTableModel.Column;
 import com.protect7.authanalyzer.util.BypassConstants;
 import com.protect7.authanalyzer.util.CurrentConfig;
-import com.protect7.authanalyzer.util.Diff_match_patch;
 import com.protect7.authanalyzer.util.GenericHelper;
-import com.protect7.authanalyzer.util.Diff_match_patch.Diff;
-import com.protect7.authanalyzer.util.Diff_match_patch.LinesToCharsResult;
+import com.protect7.authanalyzer.montoya.HttpExchange;
 import burp.BurpExtender;
-import burp.IHttpRequestResponse;
-import burp.IHttpService;
-import burp.IMessageEditor;
-import burp.IMessageEditorController;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.ui.editor.EditorOptions;
+import burp.api.montoya.ui.editor.HttpRequestEditor;
+import burp.api.montoya.ui.editor.HttpResponseEditor;
 
 public class CenterPanel extends JPanel {
 
@@ -77,19 +73,7 @@ public class CenterPanel extends JPanel {
 	private RequestTableModel tableModel;
 	private final JPanel messageViewPanel;
 	private CustomRowSorter sorter;
-	private final String BUTTON_TEXT_COMPARE_VIEW = "比较视图  \u29C9";
-	private final String BUTTON_TEXT_SINGLE_VIEW = "单视图  \u25A2";
-	private final String BUTTON_TEXT_EXPAND_DIFF = "展开差异视图  \u25B7";
-	private final String BUTTON_TEXT_COLLAPSE_DIFF = "折叠差异视图  \u25BD";
 	private final RequestResponsePanel tabbedPanel1;
-	private final RequestResponsePanel tabbedPanel2;
-	private final String TEXT_DIFF_VIEW_DEFAULT = "<strong>差异视图</strong>";
-	private final JEditorPane diffPane = new JEditorPane("text/html", TEXT_DIFF_VIEW_DEFAULT);
-	private final JButton changeMessageViewButton = new JButton(BUTTON_TEXT_COMPARE_VIEW);
-	private final JButton expandDiffButton = new JButton(BUTTON_TEXT_EXPAND_DIFF);
-	private final JCheckBox syncTabCheckBox = new JCheckBox("同步标签      ", true);
-	private final JCheckBox showDiffCheckBox = new JCheckBox("显示差异", false);
-	private final JScrollPane comparisonScrollPane = new JScrollPane(diffPane);
 	private final JSplitPane splitPane;
 	private final JButton clearTableButton;
 	private final JCheckBox showOnlyMarked = new JCheckBox("已标记", false);
@@ -110,6 +94,9 @@ public class CenterPanel extends JPanel {
 	private int selectedId = -1;
 	// 合并高频变更导致的排序/重绘，降低大批量数据时的卡顿
 	private Timer sortDebounceTimer;
+	private Timer pendingRequestsUiTimer;
+	private final AtomicInteger pendingRequestsUiValue = new AtomicInteger(0);
+	private final AtomicBoolean pendingRequestsUiUpdateQueued = new AtomicBoolean(false);
 
 	public CenterPanel(MainPanel mainPanel) {
 		this.mainPanel = mainPanel;
@@ -117,11 +104,7 @@ public class CenterPanel extends JPanel {
 		table = new JTable();
 		// 初始化排序防抖定时器，需在 table 初始化后使用
 		sortDebounceTimer = new Timer(120, e -> {
-			try {
-				if (sorter != null) {
-					sorter.sort();
-				}
-			} catch (Exception ignore) {}
+			updateTableFilterInfo();
 			table.revalidate();
 			table.repaint();
 		});
@@ -204,105 +187,17 @@ public class CenterPanel extends JPanel {
 		});
 		tableConfigPanel.add(exportDataButton);
 		
-		JButton copyUrlsButton = new JButton("复制URL");
+		JButton copyUrlsButton = new JButton("去重复制URL");
 		copyUrlsButton.addActionListener(e -> copyUrlsToClipboard());
 		tableConfigPanel.add(copyUrlsButton);
 		tablePanel.add(tableConfigPanel, BorderLayout.SOUTH);
 		
 		tabbedPanel1 = new RequestResponsePanel(0, this);
-		tabbedPanel2 = new RequestResponsePanel(1, this);
-		JPanel messageViewButtons = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
-		messageViewButtons.add(changeMessageViewButton);
-		syncTabCheckBox.setEnabled(false);
-		messageViewButtons.add(syncTabCheckBox);
-		showDiffCheckBox.setEnabled(false);
-		messageViewButtons.add(showDiffCheckBox);
-		messageViewButtons.add(expandDiffButton);
-		messageViewPanel = new JPanel(new GridBagLayout());
-		GridBagConstraints c = new GridBagConstraints();
-		c.gridx = 0;
-		c.gridy = 0;
-		c.fill = GridBagConstraints.HORIZONTAL;
-		messageViewPanel.add(messageViewButtons, c);
-		c.fill = GridBagConstraints.BOTH;
-		c.weightx = 1.0;
-		c.weighty = 1.0;
-		c.gridy++;
-		messageViewPanel.add(tabbedPanel1, c);
-		c.gridy++;
-		messageViewPanel.add(tabbedPanel2, c);
-		tabbedPanel2.setVisible(false);
-		c.gridy++;
-		diffPane.setEditable(false);
-		diffPane.putClientProperty("html.disable", null);
-		comparisonScrollPane.setVisible(false);
-		messageViewPanel.add(comparisonScrollPane, c);
-		expandDiffButton.setEnabled(false);
-		changeMessageViewButton.addActionListener(e -> {
-			if(changeMessageViewButton.getText().equals(BUTTON_TEXT_COMPARE_VIEW)) {
-				changeMessageViewButton.setText(BUTTON_TEXT_SINGLE_VIEW);
-				tabbedPanel2.setVisible(true);
-				if(showDiffCheckBox.isSelected()) {
-					comparisonScrollPane.setVisible(true);
-					expandDiffButton.setEnabled(true);
-				}
-				syncTabCheckBox.setEnabled(true);
-				showDiffCheckBox.setEnabled(true);
-				changeRequestResponseView(true);
-				updateDiffPane();
-			}
-			else {
-				changeMessageViewButton.setText(BUTTON_TEXT_COMPARE_VIEW);
-				tabbedPanel1.setVisible(true);
-				tabbedPanel2.setVisible(false);
-				comparisonScrollPane.setVisible(false);
-				syncTabCheckBox.setEnabled(false);
-				showDiffCheckBox.setEnabled(false);
-				expandDiffButton.setText(BUTTON_TEXT_EXPAND_DIFF);
-				expandDiffButton.setEnabled(false);
-			}
-		});
-		expandDiffButton.addActionListener(e -> {
-			if(expandDiffButton.getText().equals(BUTTON_TEXT_EXPAND_DIFF)) {
-				expandDiffButton.setText(BUTTON_TEXT_COLLAPSE_DIFF);
-				tabbedPanel1.setVisible(false);
-				tabbedPanel2.setVisible(false);
-				syncTabCheckBox.setEnabled(false);
-				showDiffCheckBox.setEnabled(false);
-				showDiffCheckBox.setSelected(true);
-				comparisonScrollPane.setVisible(true);
-			}
-			else {
-				expandDiffButton.setText(BUTTON_TEXT_EXPAND_DIFF);
-				tabbedPanel1.setVisible(true);
-				tabbedPanel2.setVisible(true);
-				syncTabCheckBox.setEnabled(true);
-				showDiffCheckBox.setEnabled(true);
-			}
-		});
-		showDiffCheckBox.addActionListener(e -> {
-			if(showDiffCheckBox.isSelected()) {
-				comparisonScrollPane.setVisible(true);
-				expandDiffButton.setEnabled(true);
-				updateDiffPane();
-			}
-			else {
-				comparisonScrollPane.setVisible(false);
-				expandDiffButton.setEnabled(false);
-			}
-			SwingUtilities.invokeLater(new Runnable() {
-				
-				@Override
-				public void run() {
-					messageViewPanel.revalidate();
-				}
-			});
-		});
-		
+		messageViewPanel = new JPanel(new BorderLayout());
+		messageViewPanel.add(tabbedPanel1, BorderLayout.CENTER);
 		
 		messageViewPanel.setBorder(BorderFactory.createLineBorder(Color.GRAY));
 		tabbedPanel1.setBorder(BorderFactory.createLineBorder(Color.GRAY));
-		tabbedPanel2.setBorder(BorderFactory.createLineBorder(Color.GRAY));
 
 		splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tablePanel, messageViewPanel);
 		splitPane.setDividerSize(5);
@@ -323,7 +218,7 @@ public class CenterPanel extends JPanel {
 	}
 
 	private void loadTableSettings() {
-		String savedSettings = BurpExtender.callbacks.loadExtensionSetting(TABLE_SETTINGS);
+		String savedSettings = BurpExtender.api.persistence().preferences().getString(TABLE_SETTINGS);
 		if (savedSettings != null) {
 			String[] split = savedSettings.split(",");
 			for (String columnAsString : split) {
@@ -341,102 +236,11 @@ public class CenterPanel extends JPanel {
 	}
 
 	public void updateOtherTabbedPane(int tabbedPaneId, int index) {
-		if (syncTabCheckBox.isSelected()) {
-			boolean pending = false;
-			if (tabbedPaneId == 0) {
-				pending = tabbedPanel2.setTabbedPaneIndex(index);
-			}
-			if (tabbedPaneId == 1) {
-				pending = tabbedPanel1.setTabbedPaneIndex(index);
-			}
-			if (!pending) {
-				updateDiffPane();
-			}
-		} else {
-			updateDiffPane();
-		}
+		// Single message view only.
 	}
 
 	public void updateDiffPane() {
-		if (changeMessageViewButton.getText().equals(BUTTON_TEXT_SINGLE_VIEW) && showDiffCheckBox.isSelected()) {
-			String msg1 = tabbedPanel1.getCurrentMessageString();
-			String msg2 = tabbedPanel2.getCurrentMessageString();
-			if (msg1 == null || msg2 == null) {
-				diffPane.setText(TEXT_DIFF_VIEW_DEFAULT);
-			} else {
-				// On test machine it took approx. 3s to calc two msg with 200KB
-				if (msg1.length() > 200000 || msg2.length() > 200000) {
-					diffPane.setText(getHTMLCenterText("消息太大，无法计算差异。"));
-				} else {
-					diffPane.setText(getHTMLCenterText("计算差异中..."));
-					
-					// 使用CompletableFuture进行异步计算
-					CompletableFuture.supplyAsync(() -> {
-						Diff_match_patch dmp = new Diff_match_patch();
-						LinesToCharsResult a = dmp.diff_linesToChars(msg1, msg2);
-						String lineText1 = a.getChars1();
-						String lineText2 = a.getChars2();
-						List<String> lineArray = a.getLineArray();
-						LinkedList<Diff> diffs = dmp.diff_main(lineText1, lineText2, false);
-						dmp.diff_charsToLines(diffs, lineArray);
-						return getHTMLfromDiff(diffs);
-					}).thenAccept(diffPaneText -> {
-						// 在EDT线程中更新UI
-						SwingUtilities.invokeLater(() -> {
-							diffPane.setText(diffPaneText);
-							comparisonScrollPane.getVerticalScrollBar().setValue(0);
-							comparisonScrollPane.getHorizontalScrollBar().setValue(0);
-							messageViewPanel.revalidate();
-						});
-					}).exceptionally(throwable -> {
-						// 处理异常
-						SwingUtilities.invokeLater(() -> {
-							diffPane.setText(getHTMLCenterText("计算差异时出错: " + throwable.getMessage()));
-						});
-						return null;
-					});
-				}
-			}
-		}
-	}
-
-	private String getHTMLfromDiff(LinkedList<Diff_match_patch.Diff> diff) {
-		int inserts = 0;
-		int deletes = 0;
-		StringBuilder document = new StringBuilder();
-		for (Diff_match_patch.Diff currentDiff : diff) {
-			String text = currentDiff.text.replace("<", "&lt;").replace("\n", "<br>");
-			if (currentDiff.operation == Diff_match_patch.Operation.INSERT) {
-				document.append("<span style='background-color:#c2f9c2;color:#000000;'>").append(text)
-						.append("</span>");
-				inserts++;
-			}
-			if (currentDiff.operation == Diff_match_patch.Operation.DELETE) {
-				document.append("<span style='background-color:#ffb2b2;color:#000000;'>").append(text)
-						.append("</span>");
-				deletes++;
-			}
-			if (currentDiff.operation == Diff_match_patch.Operation.EQUAL) {
-				document.append("<span>").append(text).append("</span>");
-			}
-		}
-		String headerText = "";
-		String selectedSession1 = tabbedPanel1.getSelectedSession();
-		String selectedMsg1 = tabbedPanel1.getSelectedMessage();
-		String selectedSession2 = tabbedPanel2.getSelectedSession();
-		String selectedMsg2 = tabbedPanel2.getSelectedMessage();
-		if (selectedSession1 != null && selectedSession2 != null && selectedMsg1 != null && selectedMsg2 != null) {
-			headerText = "<span><strong>差异: " + selectedSession1 + " (" + selectedMsg1 + ") &#x2794; "
-					+ selectedSession2 + " (" + selectedMsg2 + ")</strong></span>";
-			headerText += "<p><span style='background-color:#c2f9c2;color:#000000;'>插入: " + inserts
-					+ "</span>&nbsp;&nbsp;&nbsp;<span style='background:#ffb2b2;color:#000000;'>删除: " + deletes
-					+ "</span></p>";
-		}
-		return headerText + "<p style ='font-family: Courier New,font-size:13pt;'>" + document.toString() + "</p>";
-	}
-
-	private String getHTMLCenterText(String content) {
-		return "<br><br><br><center>" + content + "</center>";
+		// Diff view has been removed.
 	}
 
 	private void setupTableContextMenu() {
@@ -485,7 +289,7 @@ public class CenterPanel extends JPanel {
 						repeatRequestItem.addActionListener(e -> {
 							hideContextMenu.run();
 							Collections.sort(requestResponseList);
-							IHttpRequestResponse[] messages = new IHttpRequestResponse[requestResponseList.size()];
+							HttpExchange[] messages = new HttpExchange[requestResponseList.size()];
 							for (int i=0; i<requestResponseList.size(); i++) {
 								messages[i] = requestResponseList.get(i).getRequestResponse();
 							}
@@ -509,7 +313,6 @@ public class CenterPanel extends JPanel {
 								// 若无选中项，重置右侧详情面板，避免显示已删除对象
 								if (table.getSelectedRowCount() == 0) {
 									selectedId = -1;
-									diffPane.setText(TEXT_DIFF_VIEW_DEFAULT);
 									messageViewPanel.revalidate();
 								}
 								table.revalidate();
@@ -581,22 +384,16 @@ public class CenterPanel extends JPanel {
 				continue;
 			}
 			try {
-				IHttpRequestResponse ihrr = orr.getRequestResponse();
-				if (ihrr.getHttpService() == null) {
+				HttpExchange ihrr = orr.getRequestResponse();
+				if (ihrr.getHttpService() == null || ihrr.getRequest() == null) {
 					continue;
 				}
-				boolean useHttps = "https".equalsIgnoreCase(ihrr.getHttpService().getProtocol());
 				String tabName = tag;
 				// 批量时保证唯一性，便于在 Repeater 中区分；带标签名称模拟“分组”
 				if (requestResponseList.size() > 1) {
 					tabName = tag + "-" + orr.getId();
 				}
-				BurpExtender.callbacks.sendToRepeater(
-						ihrr.getHttpService().getHost(),
-						ihrr.getHttpService().getPort(),
-						useHttps,
-						ihrr.getRequest(),
-						tabName);
+				BurpExtender.api.repeater().sendToRepeater(ihrr.getRequest(), tabName);
 			} catch (Exception ignore) {}
 		}
 	}
@@ -621,9 +418,7 @@ public class CenterPanel extends JPanel {
 	public void initCenterPanel() {
 		initTableWithModel();
 		tabbedPanel1.init();
-		tabbedPanel2.init();
 		selectedId = -1;
-		diffPane.setText(TEXT_DIFF_VIEW_DEFAULT);
 		splitPane.setResizeWeight(0.5d);
 	}
 
@@ -652,9 +447,11 @@ public class CenterPanel extends JPanel {
 
 	public void clearTable() {
 		config.clearSessionRequestMaps();
+		if (sorter != null) {
+			sorter.clearIndex();
+		}
 		tableModel.clearRequestMap();
 		selectedId = -1;
-		diffPane.setText(TEXT_DIFF_VIEW_DEFAULT);
 	}
 
 	public ArrayList<OriginalRequestResponse> getFilteredRequestResponseList() {
@@ -718,16 +515,36 @@ public class CenterPanel extends JPanel {
 	}
 	
 	public void updateAmountOfPendingRequests(int amountOfPendingRequests) {
+		pendingRequestsUiValue.set(amountOfPendingRequests);
+		if (!pendingRequestsUiUpdateQueued.compareAndSet(false, true)) {
+			return;
+		}
 		SwingUtilities.invokeLater(() -> {
-			if(amountOfPendingRequests == 0) {
-				pendingRequestsLabel.setVisible(false);
+			if (pendingRequestsUiTimer == null) {
+				pendingRequestsUiTimer = new Timer(300, e -> {
+					pendingRequestsUiUpdateQueued.set(false);
+					flushPendingRequestsUi();
+				});
+				pendingRequestsUiTimer.setRepeats(false);
 			}
-			else {
-				pendingRequestsLabel.setVisible(true);
-				pendingRequestsLabel.setText("待处理请求队列: " + amountOfPendingRequests);
+			if (!pendingRequestsUiTimer.isRunning()) {
+				pendingRequestsUiTimer.start();
+			} else {
+				pendingRequestsUiUpdateQueued.set(false);
 			}
 		});
 	} 
+
+	private void flushPendingRequestsUi() {
+		int pending = pendingRequestsUiValue.get();
+		if(pending == 0) {
+			pendingRequestsLabel.setVisible(false);
+		}
+		else {
+			pendingRequestsLabel.setVisible(true);
+			pendingRequestsLabel.setText("待处理请求队列: " + pending);
+		}
+	}
 	
 	private void changeRequestResponseView(boolean force) {
 		if (table.getSelectedRow() != -1) {
@@ -735,97 +552,41 @@ public class CenterPanel extends JPanel {
 			OriginalRequestResponse originalRequestResponse = tableModel.getOriginalRequestResponse(modelRowIndex);
 			if (force || (originalRequestResponse != null && selectedId != originalRequestResponse.getId())) {
 				selectedId = originalRequestResponse.getId();
-				boolean compareViewVisible = changeMessageViewButton.getText().equals(BUTTON_TEXT_SINGLE_VIEW);
-				IMessageEditorController controllerOriginal = new CustomIMessageEditorController(
-						originalRequestResponse.getRequestResponse().getHttpService(),
-						originalRequestResponse.getRequestResponse().getRequest(),
-						originalRequestResponse.getRequestResponse().getResponse());
-				IMessageEditor requestMessageEditorOriginal = BurpExtender.callbacks
-						.createMessageEditor(controllerOriginal, false);
-				requestMessageEditorOriginal.setMessage(originalRequestResponse.getRequestResponse().getRequest(),
-						true);
-				tabbedPanel1.setRequestMessage(tabbedPanel1.TITLE_ORIGINAL, requestMessageEditorOriginal.getComponent(),
-						requestMessageEditorOriginal);
-				if (compareViewVisible) {
-					IMessageEditor requestMessageEditorOriginal2 = BurpExtender.callbacks
-							.createMessageEditor(controllerOriginal, false);
-					requestMessageEditorOriginal2.setMessage(originalRequestResponse.getRequestResponse().getRequest(),
-							true);
-					tabbedPanel2.setRequestMessage(tabbedPanel1.TITLE_ORIGINAL,
-							requestMessageEditorOriginal2.getComponent(), requestMessageEditorOriginal2);
-				}
-				if (originalRequestResponse.getRequestResponse().getResponse() != null) {
-					IMessageEditor responseMessageEditorOriginal = BurpExtender.callbacks
-							.createMessageEditor(controllerOriginal, false);
-					responseMessageEditorOriginal.setMessage(originalRequestResponse.getRequestResponse().getResponse(),
-							false);
+				HttpExchange originalExchange = originalRequestResponse.getRequestResponse();
+				HttpRequestEditor requestMessageEditorOriginal = createRequestEditor(originalExchange.getRequest());
+				tabbedPanel1.setRequestMessage(tabbedPanel1.TITLE_ORIGINAL, requestMessageEditorOriginal.uiComponent(),
+						() -> requestMessageEditorOriginal.getRequest().toString());
+				if (originalExchange.getResponse() != null) {
+					HttpResponseEditor responseMessageEditorOriginal = createResponseEditor(originalExchange.getResponse());
 					tabbedPanel1.setResponseMessage(tabbedPanel1.TITLE_ORIGINAL,
-							responseMessageEditorOriginal.getComponent(), responseMessageEditorOriginal);
-					if (compareViewVisible) {
-						IMessageEditor responseMessageEditorOriginal2 = BurpExtender.callbacks
-								.createMessageEditor(controllerOriginal, false);
-						responseMessageEditorOriginal2
-								.setMessage(originalRequestResponse.getRequestResponse().getResponse(), false);
-						tabbedPanel2.setResponseMessage(tabbedPanel1.TITLE_ORIGINAL,
-								responseMessageEditorOriginal2.getComponent(), responseMessageEditorOriginal2);
-					}
+							responseMessageEditorOriginal.uiComponent(),
+							() -> responseMessageEditorOriginal.getResponse().toString());
 				} else {
 					tabbedPanel1.setResponseMessage(tabbedPanel1.TITLE_ORIGINAL,
-							getMessageViewLabel(originalRequestResponse.getInfoText()), null);
-					if (compareViewVisible) {
-						tabbedPanel2.setResponseMessage(tabbedPanel1.TITLE_ORIGINAL,
-								getMessageViewLabel(originalRequestResponse.getInfoText()), null);
-					}
+						getMessageViewLabel(originalRequestResponse.getInfoText()), null);
 				}
 
 				for (Session session : config.getSessions()) {
 					AnalyzerRequestResponse analyzerRequestResponse = session.getRequestResponseMap()
 							.get(originalRequestResponse.getId());
-					IHttpRequestResponse sessionRequestResponse = analyzerRequestResponse.getRequestResponse();
+					HttpExchange sessionRequestResponse = analyzerRequestResponse.getRequestResponse();
 					if (sessionRequestResponse != null) {
-						IMessageEditorController controller = new CustomIMessageEditorController(
-								sessionRequestResponse.getHttpService(), sessionRequestResponse.getRequest(),
-								sessionRequestResponse.getResponse());
+						HttpRequestEditor requestMessageEditor = createRequestEditor(sessionRequestResponse.getRequest());
+						tabbedPanel1.setRequestMessage(session.getName(), requestMessageEditor.uiComponent(),
+								() -> requestMessageEditor.getRequest().toString());
 
-						IMessageEditor requestMessageEditor = BurpExtender.callbacks.createMessageEditor(controller,
-								false);
-						requestMessageEditor.setMessage(sessionRequestResponse.getRequest(), true);
-						tabbedPanel1.setRequestMessage(session.getName(), requestMessageEditor.getComponent(),
-								requestMessageEditor);
-						if (compareViewVisible) {
-							IMessageEditor requestMessageEditor2 = BurpExtender.callbacks
-									.createMessageEditor(controller, false);
-							requestMessageEditor2.setMessage(sessionRequestResponse.getRequest(), true);
-							tabbedPanel2.setRequestMessage(session.getName(), requestMessageEditor2.getComponent(),
-									requestMessageEditor2);
-						}
-
-						IMessageEditor responseMessageEditor = BurpExtender.callbacks.createMessageEditor(controller,
-								false);
-						responseMessageEditor.setMessage(sessionRequestResponse.getResponse(), false);
-						tabbedPanel1.setResponseMessage(session.getName(), responseMessageEditor.getComponent(),
-								responseMessageEditor);
-						if (compareViewVisible) {
-							IMessageEditor responseMessageEditor2 = BurpExtender.callbacks
-									.createMessageEditor(controller, false);
-							responseMessageEditor2.setMessage(sessionRequestResponse.getResponse(), false);
-							tabbedPanel2.setResponseMessage(session.getName(), responseMessageEditor2.getComponent(),
-									responseMessageEditor2);
+						if (sessionRequestResponse.getResponse() != null) {
+							HttpResponseEditor responseMessageEditor = createResponseEditor(sessionRequestResponse.getResponse());
+							tabbedPanel1.setResponseMessage(session.getName(), responseMessageEditor.uiComponent(),
+									() -> responseMessageEditor.getResponse().toString());
 						}
 					} else {
 						tabbedPanel1.setRequestMessage(session.getName(),
 								getMessageViewLabel(analyzerRequestResponse.getInfoText()), null);
 						tabbedPanel1.setResponseMessage(session.getName(),
 								getMessageViewLabel(analyzerRequestResponse.getInfoText()), null);
-						if (compareViewVisible) {
-							tabbedPanel2.setRequestMessage(session.getName(),
-									getMessageViewLabel(analyzerRequestResponse.getInfoText()), null);
-							tabbedPanel2.setResponseMessage(session.getName(),
-									getMessageViewLabel(analyzerRequestResponse.getInfoText()), null);
-						}
 					}
 				}
-				updateDiffPane();
 				SwingUtilities.invokeLater(new Runnable() {
 
 					@Override
@@ -835,6 +596,18 @@ public class CenterPanel extends JPanel {
 				});
 			}
 		}
+	}
+
+	private HttpRequestEditor createRequestEditor(HttpRequest request) {
+		HttpRequestEditor editor = BurpExtender.api.userInterface().createHttpRequestEditor(EditorOptions.READ_ONLY);
+		editor.setRequest(request);
+		return editor;
+	}
+
+	private HttpResponseEditor createResponseEditor(HttpResponse response) {
+		HttpResponseEditor editor = BurpExtender.api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
+		editor.setResponse(response);
+		return editor;
 	}
 
 	private JLabel getMessageViewLabel(String text) {
@@ -942,37 +715,9 @@ public class CenterPanel extends JPanel {
 		}
 		JOptionPane.showConfirmDialog(parent, inputPanel, "显示/隐藏列", JOptionPane.CLOSED_OPTION);
 		String saveString = columnSet.toString().replaceAll(" ", "").replace("[", "").replace("]", "");
-		BurpExtender.callbacks.saveExtensionSetting(TABLE_SETTINGS, saveString);
+		BurpExtender.api.persistence().preferences().setString(TABLE_SETTINGS, saveString);
 	}
 
-	private class CustomIMessageEditorController implements IMessageEditorController {
-
-		private final IHttpService httpService;
-		private final byte[] request;
-		private final byte[] response;
-
-		public CustomIMessageEditorController(IHttpService httpService, byte[] request, byte[] response) {
-			this.httpService = httpService;
-			this.request = request;
-			this.response = response;
-		}
-
-		@Override
-		public IHttpService getHttpService() {
-			return httpService;
-		}
-
-		@Override
-		public byte[] getRequest() {
-			return request;
-		}
-
-		@Override
-		public byte[] getResponse() {
-			return response;
-		}
-	}
-	
 	private void copyUrlsToClipboard() {
 		try {
 			// 获取表格模型
@@ -982,23 +727,27 @@ public class CenterPanel extends JPanel {
 			}
 			
 			// 仅复制当前可见（过滤/排序后）行的 FullUrl
-			StringBuilder fullUrls = new StringBuilder();
+			java.util.LinkedHashSet<String> uniqueFullUrls = new java.util.LinkedHashSet<String>();
 			for (int viewRow = 0; viewRow < table.getRowCount(); viewRow++) {
 				int modelRow = table.convertRowIndexToModel(viewRow);
 				Object fullUrlValue = tableModel.getValueAt(modelRow, 4);
-				if (fullUrlValue != null && !fullUrlValue.toString().trim().isEmpty()) {
-					fullUrls.append(fullUrlValue.toString()).append("\n");
+				if (fullUrlValue != null) {
+					String fullUrl = fullUrlValue.toString();
+					if (!fullUrl.trim().isEmpty()) {
+						uniqueFullUrls.add(fullUrl);
+					}
 				}
 			}
 			
-			if (fullUrls.length() > 0) {
+			if (!uniqueFullUrls.isEmpty()) {
 				// 复制到剪贴板
-				java.awt.datatransfer.StringSelection stringSelection = new java.awt.datatransfer.StringSelection(fullUrls.toString());
+				String fullUrls = String.join(System.lineSeparator(), uniqueFullUrls);
+				java.awt.datatransfer.StringSelection stringSelection = new java.awt.datatransfer.StringSelection(fullUrls);
 				java.awt.datatransfer.Clipboard clipboard = java.awt.Toolkit.getDefaultToolkit().getSystemClipboard();
 				clipboard.setContents(stringSelection, stringSelection);
 				
 				JOptionPane.showMessageDialog(this, 
-					"成功复制 " + fullUrls.toString().split("\n").length + " 个完整URL到剪贴板！", 
+					"成功去重复制 " + uniqueFullUrls.size() + " 个完整URL到剪贴板！", 
 					"复制成功", 
 					JOptionPane.INFORMATION_MESSAGE);
 			} else {

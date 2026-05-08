@@ -35,27 +35,31 @@ public class RequestSignatureHelper {
 	}
 
 	public static String computeMultiDimSignature(OriginalRequestResponse orr) {
-		String method = orr.getMethod();
-		String host = orr.getHost();
-		String url = orr.getUrl(); // path + optional query
+		byte[] requestBytes = null;
+		if (orr.getRequestResponse() != null) {
+			requestBytes = orr.getRequestResponse().getRequestBytes();
+		}
+		return computeMultiDimSignature(orr.getMethod(), orr.getHost(), orr.getUrl(), requestBytes);
+	}
+
+	public static String computeMultiDimSignature(String method, String host, String url, byte[] requestBytes) {
+		// url is path + optional query
 		String path = extractPath(url);
 		String query = extractQuery(url);
 		String queryHash = normalizeAndHashQuery(query);
 		boolean hasBodyMethod = method != null && !(method.equalsIgnoreCase("GET") || method.equalsIgnoreCase("HEAD"));
 		String bodyHash = "";
-		if (hasBodyMethod && orr.getRequestResponse() != null) {
-			byte[] req = orr.getRequestResponse().getRequest();
-			if (req != null) {
-				String contentType = extractHeader(req, "Content-Type");
-				byte[] body = extractBody(req);
+		if (hasBodyMethod && requestBytes != null) {
+				String contentType = extractHeader(requestBytes, "Content-Type");
+				int bodyStart = bodyStart(requestBytes);
+				int bodyLength = requestBytes.length - bodyStart;
 				if (contentType != null && contentType.toLowerCase().startsWith("application/x-www-form-urlencoded")) {
-					String form = new String(body, StandardCharsets.ISO_8859_1);
+					String form = new String(requestBytes, bodyStart, bodyLength, StandardCharsets.ISO_8859_1);
 					bodyHash = normalizeAndHashQuery(form);
 				} else {
 					// Fallback: hash raw body for json/multipart/binary
-					bodyHash = sha256Hex(body);
+					bodyHash = sha256Hex(requestBytes, bodyStart, bodyLength);
 				}
-			}
 		}
 		String base = safe(method) + safe(host) + safe(path) + "?" + queryHash;
 		if (bodyHash != null && !bodyHash.equals("")) {
@@ -139,12 +143,12 @@ public class RequestSignatureHelper {
 		return null;
 	}
 
-	private static byte[] extractBody(byte[] request) {
+	private static int bodyStart(byte[] request) {
 		int pos = indexOf(request, new byte[] {'\r','\n','\r','\n'});
-		if (pos < 0) return new byte[0];
+		if (pos < 0) return request.length;
 		int bodyStart = pos + 4;
-		if (bodyStart >= request.length) return new byte[0];
-		return Arrays.copyOfRange(request, bodyStart, request.length);
+		if (bodyStart >= request.length) return request.length;
+		return bodyStart;
 	}
 
 	private static int indexOf(byte[] array, byte[] target) {
@@ -160,9 +164,14 @@ public class RequestSignatureHelper {
 	}
 
 	public static String sha256Hex(byte[] data) {
+		return sha256Hex(data, 0, data.length);
+	}
+
+	public static String sha256Hex(byte[] data, int offset, int length) {
 		try {
 			MessageDigest md = MessageDigest.getInstance("SHA-256");
-			byte[] digest = md.digest(data);
+			md.update(data, offset, length);
+			byte[] digest = md.digest();
 			StringBuilder sb = new StringBuilder(digest.length * 2);
 			for (byte b : digest) {
 				String hex = Integer.toHexString((b & 0xFF) | 0x100).substring(1);

@@ -1,14 +1,14 @@
 package com.protect7.authanalyzer.entities;
 
-import burp.IHttpService;
+import burp.api.montoya.http.HttpService;
 
 public class TokenRequest {
 	
 	private final int id;
 	private final byte[] request;
-	private final IHttpService httpService;
+	private final HttpService httpService;
 	private final int priority;
-	public TokenRequest(int id, byte[] request, IHttpService httpService, int priority) {
+	public TokenRequest(int id, byte[] request, HttpService httpService, int priority) {
 		this.id = id;
 		this.request = request;
 		this.httpService = httpService;
@@ -20,7 +20,7 @@ public class TokenRequest {
 	public int getPriority() {
 		return priority;
 	}
-	public IHttpService getHttpService() {
+	public HttpService getHttpService() {
 		return httpService;
 	}
 	public int getId() {

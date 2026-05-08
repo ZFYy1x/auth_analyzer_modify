@@ -1,27 +1,30 @@
 package com.protect7.authanalyzer.entities;
 
-import burp.IHttpRequestResponse;
+import com.protect7.authanalyzer.montoya.HttpExchange;
+import com.protect7.authanalyzer.montoya.MontoyaUtils;
 
 public class OriginalRequestResponse implements Comparable<OriginalRequestResponse>{
 	
 	private final int id;
-	private final IHttpRequestResponse requestResponse;
+	private final HttpExchange requestResponse;
 	private final String method;
 	private final String host;
 	private final String url;
+	private final String fullUrl;
 	private final String infoText;
 	private String comment = "";
 	private final int statusCode;
 	private final int responseContentLength;
 	private boolean marked = false;
 	
-	public OriginalRequestResponse(int id, IHttpRequestResponse requestResponse, String method,
+	public OriginalRequestResponse(int id, HttpExchange requestResponse, String method,
 			String url, String infoText, int statusCode, int responseContentLength) {
 		this.id = id;
 		this.requestResponse = requestResponse;
 		this.method = method;
-		this.host = requestResponse.getHttpService().getHost();
+		this.host = requestResponse.getHttpService().host();
 		this.url = url;
+		this.fullUrl = buildFullUrl();
 		this.infoText = infoText;
 		this.statusCode = statusCode;
 		this.responseContentLength = responseContentLength;
@@ -32,7 +35,7 @@ public class OriginalRequestResponse implements Comparable<OriginalRequestRespon
 	public int getId() {
 		return id;
 	}
-	public IHttpRequestResponse getRequestResponse() {
+	public HttpExchange getRequestResponse() {
 		return requestResponse;
 	}
 	public String getMethod() {
@@ -46,10 +49,14 @@ public class OriginalRequestResponse implements Comparable<OriginalRequestRespon
 	}
 	
 	public String getFullUrl() {
+		return fullUrl;
+	}
+	
+	private String buildFullUrl() {
 		// 构建完整的URL，包括协议、主机、端口和路径
-		String protocol = requestResponse.getHttpService().getProtocol();
-		String host = requestResponse.getHttpService().getHost();
-		int port = requestResponse.getHttpService().getPort();
+		String protocol = MontoyaUtils.protocol(requestResponse.getHttpService());
+		String host = requestResponse.getHttpService().host();
+		int port = requestResponse.getHttpService().port();
 		
 		// 构建基础URL
 		StringBuilder fullUrl = new StringBuilder();

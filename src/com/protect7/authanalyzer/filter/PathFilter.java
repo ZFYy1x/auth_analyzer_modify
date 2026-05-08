@@ -1,10 +1,16 @@
 package com.protect7.authanalyzer.filter;
 
-import burp.IBurpExtenderCallbacks;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
+import java.util.Collections;
+import java.util.List;
+import java.util.ArrayList;
+
+import burp.api.montoya.core.ToolType;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 public class PathFilter extends RequestFilter {
+
+	private List<String> pathLiterals = Collections.emptyList();
 
 	public PathFilter(int filterIndex, String description) {
 		super(filterIndex, description);
@@ -12,17 +18,30 @@ public class PathFilter extends RequestFilter {
 	}
 
 	@Override
-	public boolean filterRequest(IBurpExtenderCallbacks callbacks, int toolFlag, IRequestInfo requestInfo, IResponseInfo responseInfo) {
-		if(onOffButton.isSelected() && requestInfo.getUrl().getPath() != null) {		
-			String url = requestInfo.getUrl().getPath().toString().toLowerCase();	
-			for(String stringLiteral : stringLiterals) {
-				if(url.contains(stringLiteral.toLowerCase()) && !stringLiteral.trim().equals("")) {
+	public boolean filterRequest(ToolType toolType, HttpRequest request, HttpResponse response) {
+		if(onOffButton.isSelected() && request.pathWithoutQuery() != null) {
+			String url = request.pathWithoutQuery().toLowerCase();
+			for(String stringLiteral : pathLiterals) {
+				if(url.contains(stringLiteral)) {
 					incrementFiltered();
 					return true;
 				}
 			}
 		}
 		return false;
+	}
+
+	@Override
+	protected void onFilterStringLiteralsChanged() {
+		ArrayList<String> compiled = new ArrayList<String>();
+		if (stringLiterals != null) {
+			for(String stringLiteral : stringLiterals) {
+				if(stringLiteral != null && !stringLiteral.trim().equals("")) {
+					compiled.add(stringLiteral.toLowerCase());
+				}
+			}
+		}
+		pathLiterals = Collections.unmodifiableList(compiled);
 	}
 	
 	@Override

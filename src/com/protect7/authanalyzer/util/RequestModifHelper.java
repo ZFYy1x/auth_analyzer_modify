@@ -1,8 +1,9 @@
 package com.protect7.authanalyzer.util;
 
+import static burp.api.montoya.http.message.params.HttpParameter.parameter;
+
 import java.io.StringReader;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -10,6 +11,7 @@ import java.util.Map;
 
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -20,9 +22,14 @@ import com.protect7.authanalyzer.entities.Session;
 import com.protect7.authanalyzer.entities.Token;
 import com.protect7.authanalyzer.entities.TokenLocation;
 import com.protect7.authanalyzer.entities.TokenPriority;
-import burp.BurpExtender;
-import burp.IParameter;
-import burp.IRequestInfo;
+import com.protect7.authanalyzer.montoya.MontoyaUtils;
+
+import burp.api.montoya.http.HttpService;
+import burp.api.montoya.http.message.ContentType;
+import burp.api.montoya.http.message.params.HttpParameter;
+import burp.api.montoya.http.message.params.HttpParameterType;
+import burp.api.montoya.http.message.params.ParsedHttpParameter;
+import burp.api.montoya.http.message.requests.HttpRequest;
 
 public class RequestModifHelper {
 	
@@ -39,7 +46,7 @@ public class RequestModifHelper {
 			return headers;
 		}
 
-		// 支持 1.1 / 2 / 3。最终拼成 HTTP/<mode>
+		// Support 1.1 / 2 / 3. The final request-line token is HTTP/<mode>.
 		String targetVersionToken = "HTTP/" + mode;
 
 		String requestLine = headers.get(0);
@@ -57,7 +64,6 @@ public class RequestModifHelper {
 			if (lastToken.toUpperCase().startsWith("HTTP/")) {
 				newRequestLine = requestLine.substring(0, lastSpace + 1) + targetVersionToken;
 			} else {
-				// 不符合预期格式时，保守追加
 				newRequestLine = requestLine + " " + targetVersionToken;
 			}
 		} else {
@@ -152,7 +158,7 @@ public class RequestModifHelper {
 				}
 				// Check for URL path parameters (semicolon syntax)
 				String urlPathParameter = ";" + token.getName() + "=";
-				int startIndex1 = pathHeader.indexOf(urlPathParameter);
+				int startIndex1;
 				if(token.isCaseSensitiveTokenName()) {
 					startIndex1 = pathHeader.indexOf(urlPathParameter);
 				}
@@ -224,12 +230,11 @@ public class RequestModifHelper {
 		return headerToReplaceList;
 	}
 	
-	public static byte[] getModifiedRequest(byte[] originalRequest, Session session, TokenPriority tokenPriority) {
-		IRequestInfo originalRequestInfo = BurpExtender.callbacks.getHelpers().analyzeRequest(originalRequest);
+	public static byte[] getModifiedRequest(byte[] originalRequest, HttpService httpService, Session session, TokenPriority tokenPriority) {
 		byte[] modifiedRequest = applyMatchesAndReplaces(session, originalRequest);
 		for (Token token : session.getTokens()) {
 			if (token.getValue() != null || token.isRemove() || token.isPromptForInput()) {
-				modifiedRequest = getModifiedRequest(modifiedRequest, originalRequestInfo, session, token, tokenPriority);
+				modifiedRequest = getModifiedRequest(modifiedRequest, httpService, session, token, tokenPriority);
 			}
 		}
 		return modifiedRequest;
@@ -250,56 +255,55 @@ public class RequestModifHelper {
 				return requestAsString.getBytes();
 			}
 			catch (Exception e) {
-				BurpExtender.callbacks.printError("Cannot apply match and replaces");
+				MontoyaUtils.logError("Cannot apply match and replaces");
 			}
 		}	
 		return request; 
 	}
 	
-	private static byte[] getModifiedRequest(byte[] request, IRequestInfo originalRequestInfo, Session session, Token token, TokenPriority tokenPriority) {
+	private static byte[] getModifiedRequest(byte[] request, HttpService httpService, Session session, Token token, TokenPriority tokenPriority) {
 		byte[] modifiedRequest = request;
+		HttpRequest requestInfo = MontoyaUtils.requestFromBytes(httpService, modifiedRequest);
 		boolean tokenExists = false;
-		for (IParameter parameter : originalRequestInfo.getParameters()) {
+		for (ParsedHttpParameter parsedParameter : requestInfo.parameters()) {
 			// check if alias
 			boolean isAlias = false;
 			String[] aliases = token.getAliases().split(",");
 			for(String alias : aliases){
-				if(parameter.getName().equals(alias.trim())){
+				if(parsedParameter.name().equals(alias.trim())){
 					isAlias = true;
 					break;
 				}
 			}
 
 			//Wildcard Replace for standard GET and POST if token name equals '*' and has static replace
-			if(token.getName().equals("*") && token.isStaticValue() && (parameter.getType() == IParameter.PARAM_URL || parameter.getType() == IParameter.PARAM_BODY)) {
-				IParameter modifiedParameter = BurpExtender.callbacks.getHelpers().buildParameter(parameter.getName(),
-						token.getValue(), parameter.getType());
-				modifiedRequest = BurpExtender.callbacks.getHelpers().updateParameter(modifiedRequest,
-						modifiedParameter);
+			if(token.getName().equals("*") && token.isStaticValue() && 
+					(parsedParameter.type() == HttpParameterType.URL || parsedParameter.type() == HttpParameterType.BODY)) {
+				HttpParameter modifiedParameter = parameter(parsedParameter.name(), token.getValue(), parsedParameter.type());
+				modifiedRequest = requestInfo.withUpdatedParameters(modifiedParameter).toByteArray().getBytes();
+				requestInfo = MontoyaUtils.requestFromBytes(httpService, modifiedRequest);
 			}
 			//Continue with standard procedure
-			if (parameter.getName().equals(token.getName()) || parameter.getName().equals(token.getUrlEncodedName()) ||
-					(!token.isCaseSensitiveTokenName() && parameter.getName().toLowerCase().equals(token.getName().toLowerCase())) || isAlias) {
+			if (parsedParameter.name().equals(token.getName()) || parsedParameter.name().equals(token.getUrlEncodedName()) ||
+					(!token.isCaseSensitiveTokenName() && parsedParameter.name().toLowerCase().equals(token.getName().toLowerCase())) || isAlias) {
 				tokenExists = true;
 				String paramLocation = null;
-				// Helper can only handle URL, COOKIE and BODY Parameters
-				if (parameter.getType() == IParameter.PARAM_URL) {
+				if (parsedParameter.type() == HttpParameterType.URL) {
 					if(token.doReplaceAtLocation(TokenLocation.URL)) {
 						paramLocation = "URL";
 					}
 				}
-				if (parameter.getType() == IParameter.PARAM_COOKIE) {
+				if (parsedParameter.type() == HttpParameterType.COOKIE) {
 					if(token.doReplaceAtLocation(TokenLocation.COOKIE)) {
 						paramLocation = "Cookie";
 					}
 				}
-				if (parameter.getType() == IParameter.PARAM_BODY) {
+				if (parsedParameter.type() == HttpParameterType.BODY) {
 					if(token.doReplaceAtLocation(TokenLocation.BODY)) {
 						paramLocation = "Body";
 					}
 				}
-				// Handle JSON as well (self implemented --> Burp API update parameter does not work for JSON)
-				if (parameter.getType() == IParameter.PARAM_JSON) {
+				if (parsedParameter.type() == HttpParameterType.JSON) {
 					if(token.doReplaceAtLocation(TokenLocation.JSON)) {
 						paramLocation = "Json";
 					}
@@ -315,59 +319,57 @@ public class RequestModifHelper {
 						session.getStatusPanel().updateTokenStatus(token);
 					}
 					if (token.isRemove()) {
-						if (parameter.getType() == IParameter.PARAM_JSON) {
-							modifiedRequest = getModifiedJsonRequest(request, originalRequestInfo, token);
+						if (parsedParameter.type() == HttpParameterType.JSON) {
+							modifiedRequest = getModifiedJsonRequest(modifiedRequest, httpService, token);
 						} else {
-							modifiedRequest = BurpExtender.callbacks.getHelpers().removeParameter(modifiedRequest, parameter);
+							modifiedRequest = requestInfo.withRemovedParameters(parsedParameter).toByteArray().getBytes();
 						}
 					} else if (token.getValue() != null) {
 						tokenPriority.setPriority(tokenPriority.getPriority() + 1);
-						if (parameter.getType() == IParameter.PARAM_JSON) {
-							modifiedRequest = getModifiedJsonRequest(request, originalRequestInfo, token);
+						if (parsedParameter.type() == HttpParameterType.JSON) {
+							modifiedRequest = getModifiedJsonRequest(modifiedRequest, httpService, token);
 						} else {
-							String parameterValue = token.getValue();
-							IParameter modifiedParameter = BurpExtender.callbacks.getHelpers().buildParameter(parameter.getName(),
-									parameterValue, parameter.getType());
-							modifiedRequest = BurpExtender.callbacks.getHelpers().updateParameter(modifiedRequest,
-									modifiedParameter);
+							HttpParameter modifiedParameter = parameter(parsedParameter.name(),
+									token.getValue(), parsedParameter.type());
+							modifiedRequest = requestInfo.withUpdatedParameters(modifiedParameter).toByteArray().getBytes();
 						}
 					}
+					requestInfo = MontoyaUtils.requestFromBytes(httpService, modifiedRequest);
 				}
 			}
 		}
 		if(!tokenExists && token.isAddIfNotExists()) {
-			//Check type
-			byte requestType = originalRequestInfo.getContentType();
-			Byte parameterType = IParameter.PARAM_URL;
-			if(requestType == IRequestInfo.CONTENT_TYPE_NONE || requestType == IRequestInfo.CONTENT_TYPE_UNKNOWN) {
-				parameterType = IParameter.PARAM_URL;
+			ContentType requestType = MontoyaUtils.contentType(requestInfo);
+			HttpParameterType parameterType = HttpParameterType.URL;
+			if(requestType == ContentType.NONE || requestType == ContentType.UNKNOWN) {
+				parameterType = HttpParameterType.URL;
 			}
-			else if(requestType == IRequestInfo.CONTENT_TYPE_MULTIPART || requestType == IRequestInfo.CONTENT_TYPE_URL_ENCODED) {
-				parameterType = IParameter.PARAM_BODY;
+			else if(requestType == ContentType.MULTIPART || requestType == ContentType.URL_ENCODED) {
+				parameterType = HttpParameterType.BODY;
 			}
-			else if(requestType == IRequestInfo.CONTENT_TYPE_JSON) {
-				return getModifiedJsonRequest(modifiedRequest, originalRequestInfo, token);
+			else if(requestType == ContentType.JSON) {
+				return getModifiedJsonRequest(modifiedRequest, httpService, token);
 			}
-			IParameter newParameter = BurpExtender.callbacks.getHelpers().buildParameter(token.getUrlEncodedName(),
-					token.getValue(), parameterType);
-			modifiedRequest = BurpExtender.callbacks.getHelpers().addParameter(modifiedRequest, newParameter);
+			HttpParameter newParameter = parameter(token.getUrlEncodedName(), token.getValue(), parameterType);
+			modifiedRequest = requestInfo.withAddedParameters(newParameter).toByteArray().getBytes();
 		}
 		return modifiedRequest;
 	}
 	
-	private static byte[] getModifiedJsonRequest(byte[] request, IRequestInfo originalRequestInfo, Token token) {
+	private static byte[] getModifiedJsonRequest(byte[] request, HttpService httpService, Token token) {
 		if (!token.isRemove() && token.getValue() == null) {
 			return request;
 		}
+		HttpRequest requestInfo = MontoyaUtils.requestFromBytes(httpService, request);
 		JsonElement jsonElement = null;
 		try {
-			String bodyAsString = new String(
-					Arrays.copyOfRange(request, originalRequestInfo.getBodyOffset(), request.length));
+			int bodyOffset = requestInfo.bodyOffset();
+			String bodyAsString = new String(request, bodyOffset, request.length - bodyOffset);
 			JsonReader reader = new JsonReader(new StringReader(bodyAsString));
 			reader.setLenient(true);
 			jsonElement = JsonParser.parseReader(reader);
 		} catch (Exception e) {
-			BurpExtender.callbacks.printError("Can not parse JSON Request Body. Error Message: " + e.getMessage());
+			MontoyaUtils.logError("Can not parse JSON Request Body. Error Message: " + e.getMessage());
 			return request;
 		}
 		boolean modified = modifyJsonTokenValue(jsonElement, token);
@@ -375,14 +377,13 @@ public class RequestModifHelper {
 			addJsonToken(jsonElement, token);
 		}
 		String jsonBody = jsonElement.toString();
-		List<String> headers = originalRequestInfo.getHeaders();
+		List<String> headers = MontoyaUtils.requestHeaderLines(requestInfo);
 		for (int i = 0; i < headers.size(); i++) {
 			if (headers.get(i).startsWith("Content-Length:")) {
 				headers.set(i, "Content-Length: " + jsonBody.length());
 			}
 		}
-		byte[] modifiedRequest = BurpExtender.callbacks.getHelpers().buildHttpMessage(headers, jsonBody.getBytes());
-		return modifiedRequest;
+		return MontoyaUtils.buildHttpMessage(headers, jsonBody.getBytes());
 	}
 	
 	private static boolean modifyJsonTokenValue(JsonElement jsonElement, Token token) {

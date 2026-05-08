@@ -1,8 +1,8 @@
 package com.protect7.authanalyzer.filter;
 
-import burp.IBurpExtenderCallbacks;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
+import burp.api.montoya.core.ToolType;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 public class OnlyProxyFilter extends RequestFilter {
 
@@ -11,18 +11,18 @@ public class OnlyProxyFilter extends RequestFilter {
 	}
 
 	@Override
-	public boolean filterRequest(IBurpExtenderCallbacks callbacks, int toolFlag, IRequestInfo requestInfo, IResponseInfo responseInfo) {
+	public boolean filterRequest(ToolType toolType, HttpRequest request, HttpResponse response) {
 		if(onOffButton.isSelected()) {
-			if(toolFlag == IBurpExtenderCallbacks.TOOL_PROXY) {
+			if(toolType == ToolType.PROXY) {
 				return false;
 			}
-			else if(toolFlag == IBurpExtenderCallbacks.TOOL_REPEATER) {
+			else if(toolType == ToolType.REPEATER) {
 				incrementFiltered();
 			}
 		}
 		else {
 			//Only allow Repeater beside of Proxy
-			if(toolFlag == IBurpExtenderCallbacks.TOOL_REPEATER || toolFlag == IBurpExtenderCallbacks.TOOL_PROXY) {
+			if(toolType == ToolType.REPEATER || toolType == ToolType.PROXY) {
 				return false;
 			}
 		}

@@ -7,7 +7,6 @@ import javax.swing.JTabbedPane;
 
 import com.protect7.authanalyzer.entities.Session;
 import com.protect7.authanalyzer.util.CurrentConfig;
-import burp.IMessageEditor;
 
 public class RequestResponsePanel extends JTabbedPane {
 	
@@ -50,15 +49,15 @@ public class RequestResponsePanel extends JTabbedPane {
 		}
 	}
 	
-	public void setRequestMessage(String sessionName, Component component, IMessageEditor messageEditor) {
+	public void setRequestMessage(String sessionName, Component component, MessageContentProvider messageProvider) {
 		if(sessionTabbedPaneMap.containsKey(sessionName)) {
-			sessionTabbedPaneMap.get(sessionName).setRequestMessage(component, messageEditor);
+			sessionTabbedPaneMap.get(sessionName).setRequestMessage(component, messageProvider);
 		}
 	}
 	
-	public void setResponseMessage(String sessionName, Component component, IMessageEditor messageEditor) {
+	public void setResponseMessage(String sessionName, Component component, MessageContentProvider messageProvider) {
 		if(sessionTabbedPaneMap.containsKey(sessionName)) {
-			sessionTabbedPaneMap.get(sessionName).setResponseMessage(component, messageEditor);
+			sessionTabbedPaneMap.get(sessionName).setResponseMessage(component, messageProvider);
 		}
 	}
 	
@@ -98,14 +97,18 @@ public class RequestResponsePanel extends JTabbedPane {
 		}
 		return false;
 	}
+
+	public interface MessageContentProvider {
+		String getMessageString();
+	}
 	
 	private class SessionTabbedPane extends JTabbedPane {
 		
 		private static final long serialVersionUID = -4100725845615986632L;
 		private final String TITLE_REQUEST = "Request";
 		private final String TITLE_RESPONSE = "Response";
-		private IMessageEditor requestMessageEditor = null;
-		private IMessageEditor responseMessageEditor = null;
+		private MessageContentProvider requestMessageProvider = null;
+		private MessageContentProvider responseMessageProvider = null;
 		
 		public SessionTabbedPane(String name) {
 			add(TITLE_REQUEST, new JPanel());
@@ -116,25 +119,25 @@ public class RequestResponsePanel extends JTabbedPane {
 			});
 		}
 		
-		public void setRequestMessage(Component component, IMessageEditor messageEditor) {
-			requestMessageEditor = messageEditor;
+		public void setRequestMessage(Component component, MessageContentProvider messageProvider) {
+			requestMessageProvider = messageProvider;
 			setComponentAt(0, component);
 		}
 		
-		public void setResponseMessage(Component component, IMessageEditor messageEditor) {
-			responseMessageEditor = messageEditor;
+		public void setResponseMessage(Component component, MessageContentProvider messageProvider) {
+			responseMessageProvider = messageProvider;
 			setComponentAt(1, component);
 		}
 		
 		public String getCurrentMessageString() {
 			if(getSelectedIndex() == 0) {
-				if(requestMessageEditor != null) {
-					return new String(requestMessageEditor.getMessage());
+				if(requestMessageProvider != null) {
+					return requestMessageProvider.getMessageString();
 				}
 			}
 			if(getSelectedIndex() == 1) {
-				if(responseMessageEditor != null) {
-					return new String(responseMessageEditor.getMessage());
+				if(responseMessageProvider != null) {
+					return responseMessageProvider.getMessageString();
 				}
 			}
 			return null;

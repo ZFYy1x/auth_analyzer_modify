@@ -21,11 +21,9 @@ import javax.swing.border.EmptyBorder;
 import com.protect7.authanalyzer.gui.main.ConfigurationPanel;
 import com.protect7.authanalyzer.gui.util.HintCheckBox;
 import com.protect7.authanalyzer.gui.util.PlaceholderTextField;
+import com.protect7.authanalyzer.montoya.HttpExchange;
+import com.protect7.authanalyzer.montoya.MontoyaUtils;
 import com.protect7.authanalyzer.util.GenericHelper;
-import burp.BurpExtender;
-import burp.IHttpRequestResponse;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
 
 public class RepeatRequestFilterDialog extends JDialog {
 
@@ -34,7 +32,7 @@ public class RepeatRequestFilterDialog extends JDialog {
 	private String methodsText = "";
 
 	public RepeatRequestFilterDialog(Component parent, ConfigurationPanel configurationPanel,
-			IHttpRequestResponse[] selectedMessages) {
+			HttpExchange[] selectedMessages) {
 		JPanel inputPanel = (JPanel) getContentPane();
 		inputPanel.setLayout(new GridBagLayout());
 		inputPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
@@ -97,7 +95,7 @@ public class RepeatRequestFilterDialog extends JDialog {
 
 			@Override
 			public void actionPerformed(ActionEvent e) {
-				IHttpRequestResponse[] messages = getMessageToRepeat(selectedMessages,
+				HttpExchange[] messages = getMessageToRepeat(selectedMessages,
 						uniqueRequestsCheckbox.isSelected(), withResponseCheckbox.isSelected(),
 						patternTextField.getText().trim(), methodTextField.getText(), contentTypeTextField.getText());
 				GenericHelper.repeatRequests(messages, configurationPanel);
@@ -184,27 +182,26 @@ public class RepeatRequestFilterDialog extends JDialog {
 		}
 	}
 
-	private void updateRepeatButtonText(JButton repeatButton, IHttpRequestResponse[] sourceMessages, boolean onlyUnique,
+	private void updateRepeatButtonText(JButton repeatButton, HttpExchange[] sourceMessages, boolean onlyUnique,
 			boolean onlyWithResponse, String pattern, String methods, String responseCodentTypes) {
 		int length = getMessageToRepeat(sourceMessages, onlyUnique, onlyWithResponse, pattern, methods,
 				responseCodentTypes).length;
 		repeatButton.setText("Repeat Requests (" + length + ")");
 	}
 
-	private IHttpRequestResponse[] getMessageToRepeat(IHttpRequestResponse[] sourceMessages, boolean onlyUnique,
+	private HttpExchange[] getMessageToRepeat(HttpExchange[] sourceMessages, boolean onlyUnique,
 			boolean onlyWithResponse, String pattern, String methods, String responseConentTypes) {
-		ArrayList<IHttpRequestResponse> messages = new ArrayList<>();
+		ArrayList<HttpExchange> messages = new ArrayList<>();
 		HashSet<String> uniqueRequests = new HashSet<String>();
-		for (IHttpRequestResponse message : sourceMessages) {
+		for (HttpExchange message : sourceMessages) {
 			boolean doRepeat = true;
 			if (onlyWithResponse && message.getResponse() == null) {
 				doRepeat = false;
 			}
 			if (doRepeat && onlyUnique) {
-				String key = message.getHttpService().getHost();
+				String key = message.getHttpService().host();
 				if (message.getRequest() != null) {
-					IRequestInfo requestInfo = BurpExtender.callbacks.getHelpers().analyzeRequest(message);
-					key += requestInfo.getMethod() + requestInfo.getUrl().getPath();
+					key += message.getRequest().method() + message.getRequest().pathWithoutQuery();
 				}
 				if (uniqueRequests.contains(key)) {
 					doRepeat = false;
@@ -213,8 +210,8 @@ public class RepeatRequestFilterDialog extends JDialog {
 				}
 			}
 			if (doRepeat && (!pattern.equals("") || !methods.equals(""))) {
-				if (message.getRequest() != null) {
-					String request = new String(message.getRequest());
+				if (message.getRequestBytes() != null) {
+					String request = new String(message.getRequestBytes());
 					if (!pattern.equals("")) {
 						if (!request.contains(pattern)) {
 							doRepeat = false;
@@ -240,8 +237,7 @@ public class RepeatRequestFilterDialog extends JDialog {
 					doRepeat = false;
 				}
 				else {
-					IResponseInfo responseInfo = BurpExtender.callbacks.getHelpers().analyzeResponse(message.getResponse());
-					String stateMimeType = responseInfo.getStatedMimeType();
+					String stateMimeType = MontoyaUtils.mimeName(message.getResponse().statedMimeType());
 					String[] contentTypeSplit = responseConentTypes.split(",");
 					boolean contentTypeInList = false;
 					for (String contentType : contentTypeSplit) {
@@ -259,6 +255,6 @@ public class RepeatRequestFilterDialog extends JDialog {
 				messages.add(message);
 			}
 		}
-		return messages.toArray(new IHttpRequestResponse[messages.size()]);
+		return messages.toArray(new HttpExchange[messages.size()]);
 	}
 }

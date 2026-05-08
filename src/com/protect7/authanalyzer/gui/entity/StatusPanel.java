@@ -7,10 +7,14 @@ import java.awt.Insets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import com.protect7.authanalyzer.entities.MatchAndReplace;
 import com.protect7.authanalyzer.entities.Session;
 import com.protect7.authanalyzer.entities.Token;
@@ -30,7 +34,12 @@ public class StatusPanel extends JPanel{
 	private final HashMap<String, JLabel> tokenLabelMap = new HashMap<String, JLabel>();
 	private final HashMap<String, JButton> refreshButtonMap = new HashMap<String, JButton>();
 	private final HashMap<String, JButton> eraseButtonMap = new HashMap<String, JButton>();
-	private int amountOfFilteredRequests = 0;
+	private final AtomicInteger amountOfFilteredRequests = new AtomicInteger(0);
+	private final HashMap<String, Token> pendingTokenStatusUpdates = new HashMap<String, Token>();
+	private final AtomicBoolean filteredRequestsUiUpdateQueued = new AtomicBoolean(false);
+	private final AtomicBoolean tokenStatusUiUpdateQueued = new AtomicBoolean(false);
+	private Timer filteredRequestsUiTimer;
+	private Timer tokenStatusUiTimer;
 	private final ImageIcon refreshIcon = new ImageIcon(this.getClass().getClassLoader().getResource("refresh.png"));
 	private final ImageIcon eraseIcon = new ImageIcon(this.getClass().getClassLoader().getResource("erase.png"));
 	
@@ -38,7 +47,21 @@ public class StatusPanel extends JPanel{
 
 	public void init(Session session) {
 		removeAll();
-		amountOfFilteredRequests = 0;
+		amountOfFilteredRequests.set(0);
+		filteredRequestsUiUpdateQueued.set(false);
+		tokenStatusUiUpdateQueued.set(false);
+		synchronized (pendingTokenStatusUpdates) {
+			pendingTokenStatusUpdates.clear();
+		}
+		tokenLabelMap.clear();
+		refreshButtonMap.clear();
+		eraseButtonMap.clear();
+		if (filteredRequestsUiTimer != null) {
+			filteredRequestsUiTimer.stop();
+		}
+		if (tokenStatusUiTimer != null) {
+			tokenStatusUiTimer.stop();
+		}
 		setLayout(new GridBagLayout());
 		GridBagConstraints c = new GridBagConstraints();
 		c.gridy = 0;
@@ -257,15 +280,74 @@ public class StatusPanel extends JPanel{
 	}
 	
 	public void incrementAmountOfFitleredRequests() {
-		javax.swing.SwingUtilities.invokeLater(() -> {
-			amountOfFilteredRequests++;
-			amountOfFilteredRequestsLabel.setText("Amount of Filtered Requests: " + amountOfFilteredRequests);
-			GenericHelper.uiUpdateAnimation(amountOfFilteredRequestsLabel, Color.RED);
-		});
+		amountOfFilteredRequests.incrementAndGet();
+		scheduleFilteredRequestsUiUpdate();
 	}
 	
 	public void updateTokenStatus(Token token) {
-		javax.swing.SwingUtilities.invokeLater(() -> {
+		if (token == null) {
+			return;
+		}
+		synchronized (pendingTokenStatusUpdates) {
+			pendingTokenStatusUpdates.put(token.getName(), token);
+		}
+		if (!tokenStatusUiUpdateQueued.compareAndSet(false, true)) {
+			return;
+		}
+		SwingUtilities.invokeLater(() -> {
+			if (tokenStatusUiTimer == null) {
+				tokenStatusUiTimer = new Timer(300, e -> {
+					tokenStatusUiUpdateQueued.set(false);
+					flushTokenStatusUpdates();
+				});
+				tokenStatusUiTimer.setRepeats(false);
+			}
+			if (!tokenStatusUiTimer.isRunning()) {
+				tokenStatusUiTimer.start();
+			} else {
+				tokenStatusUiUpdateQueued.set(false);
+			}
+		});
+	}
+
+	private void scheduleFilteredRequestsUiUpdate() {
+		if (!filteredRequestsUiUpdateQueued.compareAndSet(false, true)) {
+			return;
+		}
+		SwingUtilities.invokeLater(() -> {
+			if (filteredRequestsUiTimer == null) {
+				filteredRequestsUiTimer = new Timer(300, e -> {
+					filteredRequestsUiUpdateQueued.set(false);
+					flushFilteredRequestsUiUpdate();
+				});
+				filteredRequestsUiTimer.setRepeats(false);
+			}
+			if (!filteredRequestsUiTimer.isRunning()) {
+				filteredRequestsUiTimer.start();
+			} else {
+				filteredRequestsUiUpdateQueued.set(false);
+			}
+		});
+	}
+
+	private void flushFilteredRequestsUiUpdate() {
+		int filtered = amountOfFilteredRequests.get();
+		if (filtered > 0) {
+			amountOfFilteredRequestsLabel.setText("Amount of Filtered Requests: " + filtered);
+			GenericHelper.uiUpdateAnimation(amountOfFilteredRequestsLabel, Color.RED);
+		}
+		else {
+			amountOfFilteredRequestsLabel.setText("");
+		}
+	}
+
+	private void flushTokenStatusUpdates() {
+		HashMap<String, Token> updates;
+		synchronized (pendingTokenStatusUpdates) {
+			updates = new HashMap<String, Token>(pendingTokenStatusUpdates);
+			pendingTokenStatusUpdates.clear();
+		}
+		for (Token token : updates.values()) {
 			JLabel tokenLabel = tokenLabelMap.get(token.getName());
 			if (tokenLabel != null) {
 				tokenLabel.putClientProperty("html.disable", null);
@@ -280,6 +362,6 @@ public class StatusPanel extends JPanel{
 					eraseButtonMap.get(token.getName()).setEnabled(true);
 				}
 			}
-		});
+		}
 	}
 }

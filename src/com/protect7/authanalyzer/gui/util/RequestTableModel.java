@@ -1,6 +1,8 @@
 package com.protect7.authanalyzer.gui.util;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -8,9 +10,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.TreeMap;
 // removed unused digest imports
 import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
+import com.protect7.authanalyzer.entities.AnalyzerRequestResponse;
 import com.protect7.authanalyzer.entities.OriginalRequestResponse;
 import com.protect7.authanalyzer.util.BypassConstants;
 import com.protect7.authanalyzer.util.CurrentConfig;
@@ -33,30 +37,45 @@ public class RequestTableModel extends AbstractTableModel {
 	private volatile boolean batchUpdateScheduled = false;
 	
 	// 缓存相关字段
-	private final Map<String, Integer> pathToFirstIdCache = new HashMap<String, Integer>();
+	private final Map<Integer, OriginalRequestResponse> requestResponseById = new HashMap<Integer, OriginalRequestResponse>();
+	private final Map<Integer, Integer> rowIndexById = new HashMap<Integer, Integer>();
+	private final Map<String, TreeMap<Integer, OriginalRequestResponse>> pathRowsById = new HashMap<String, TreeMap<Integer, OriginalRequestResponse>>();
 	private final Map<Integer, String> signatureCache = new HashMap<Integer, String>();
-	private final Map<String, Boolean> duplicateCache = new HashMap<String, Boolean>();
+	private final Map<String, Integer> signatureFirstIdIndex = new HashMap<String, Integer>();
+	private final Set<Integer> duplicateSignatureIdIndex = new HashSet<Integer>();
 	
 	public ArrayList<OriginalRequestResponse> getOriginalRequestResponseList() {
 		return originalRequestResponseList;
 	}
 	
 	public synchronized void addNewRequestResponse(OriginalRequestResponse requestResponse) {
-		// Always check for same path and set comment ID if found, regardless of signature duplication
+		String pathOnly = "";
 		try {
-			String pathOnly = extractPathOnly(requestResponse.getUrl());
-			Integer representativeId = findFirstVisibleRepresentativeIdForPath(pathOnly);
-			if (representativeId != null) {
-				requestResponse.setComment("重复ID:" + representativeId);
-			} else {
-				requestResponse.setComment("");
-			}
+			pathOnly = extractPathOnly(requestResponse.getUrl());
 		}
 		catch (Exception e) {
 			// ignore
 		}
+		int firstPendingRowIndex = originalRequestResponseList.size() - pendingUpdates.size();
+		int insertedRowIndex = originalRequestResponseList.size();
 		originalRequestResponseList.add(requestResponse);
+		requestResponseById.put(requestResponse.getId(), requestResponse);
+		rowIndexById.put(requestResponse.getId(), insertedRowIndex);
+		getRowsForPath(pathOnly).put(requestResponse.getId(), requestResponse);
+		indexDuplicateSignature(requestResponse);
+		Integer previousRepresentativeId = findPreviousVisibleRepresentativeIdForPath(pathOnly, requestResponse.getId());
+		ArrayList<Integer> updatedRows;
+		if (previousRepresentativeId == null && canRepresentPath(requestResponse)) {
+			updatedRows = refreshAutoDuplicateCommentsForPath(pathOnly);
+		}
+		else {
+			updatedRows = new ArrayList<Integer>();
+			if (updateAutoDuplicateComment(requestResponse, previousRepresentativeId)) {
+				updatedRows.add(insertedRowIndex);
+			}
+		}
 		pendingUpdates.add(requestResponse);
+		notifyVisibleRowsUpdated(updatedRows, firstPendingRowIndex);
 		
 		// 批量更新逻辑
 		if (pendingUpdates.size() >= BATCH_SIZE) {
@@ -131,53 +150,128 @@ public class RequestTableModel extends AbstractTableModel {
 		return pathOnly;
 	}
 
-	// Returns the first visible representative id for the given path (ignoring query),
-	// skipping entries that are effectively hidden by folding (earlier same signature)
-	// or muted by user deletion.
-	private Integer findFirstVisibleRepresentativeIdForPath(String pathOnly) {
-		// 先从缓存查找
-		Integer cachedId = pathToFirstIdCache.get(pathOnly);
-		if (cachedId != null) {
-			return cachedId;
+	private TreeMap<Integer, OriginalRequestResponse> getRowsForPath(String pathOnly) {
+		TreeMap<Integer, OriginalRequestResponse> rows = pathRowsById.get(pathOnly);
+		if (rows == null) {
+			rows = new TreeMap<Integer, OriginalRequestResponse>();
+			pathRowsById.put(pathOnly, rows);
 		}
-		
-		Integer bestId = null;
-		Map<String, Integer> signatureToFirstId = new HashMap<String, Integer>();
-		
-		for (OriginalRequestResponse existing : originalRequestResponseList) {
-			String existingPath = extractPathOnly(existing.getUrl());
-			if (!existingPath.equals(pathOnly)) {
+		return rows;
+	}
+
+	private ArrayList<Integer> refreshAutoDuplicateCommentsForPath(String pathOnly) {
+		ArrayList<Integer> updatedRows = new ArrayList<Integer>();
+		TreeMap<Integer, OriginalRequestResponse> rows = pathRowsById.get(pathOnly);
+		if (rows == null || rows.isEmpty()) {
+			return updatedRows;
+		}
+		Integer representativeId = null;
+		for (OriginalRequestResponse requestResponse : rows.values()) {
+			if (!isAutoDuplicateComment(requestResponse.getComment())) {
+				if (representativeId == null && canRepresentPath(requestResponse)) {
+					representativeId = requestResponse.getId();
+				}
 				continue;
 			}
-			try {
-				String sig = getOrComputeSignature(existing);
-				// Skip if muted
-				if (mutedSignatures.contains(sig)) {
-					continue;
-				}
-				
-				// 检查是否有更早的相同签名
-				Integer firstIdForSig = signatureToFirstId.get(sig);
-				if (firstIdForSig != null && firstIdForSig < existing.getId()) {
-					continue; // 被更早的相同签名折叠
-				}
-				
-				// 更新签名到ID的映射
-				signatureToFirstId.put(sig, existing.getId());
-				
-				if (bestId == null || existing.getId() < bestId) {
-					bestId = existing.getId();
+			if (updateAutoDuplicateComment(requestResponse, representativeId)) {
+				Integer rowIndex = rowIndexById.get(requestResponse.getId());
+				if (rowIndex != null) {
+					updatedRows.add(rowIndex);
 				}
 			}
-			catch (Exception ignore) {}
+			if (representativeId == null && canRepresentPath(requestResponse)) {
+				representativeId = requestResponse.getId();
+			}
 		}
-		
-		// 缓存结果
-		if (bestId != null) {
-			pathToFirstIdCache.put(pathOnly, bestId);
+		return updatedRows;
+	}
+
+	private boolean updateAutoDuplicateComment(OriginalRequestResponse requestResponse, Integer representativeId) {
+		if (!isAutoDuplicateComment(requestResponse.getComment())) {
+			return false;
 		}
-		
-		return bestId;
+		String newComment = representativeId == null ? "" : "重复ID:" + representativeId;
+		String oldComment = requestResponse.getComment() == null ? "" : requestResponse.getComment();
+		if (!oldComment.equals(newComment)) {
+			requestResponse.setComment(newComment);
+			return true;
+		}
+		return false;
+	}
+
+	private boolean canRepresentPath(OriginalRequestResponse requestResponse) {
+		try {
+			String signature = getOrComputeSignature(requestResponse);
+			return signature != null && signature.length() > 0 && !mutedSignatures.contains(signature);
+		}
+		catch (Exception e) {
+			return false;
+		}
+	}
+
+	private boolean isAutoDuplicateComment(String comment) {
+		return comment == null || comment.length() == 0 || comment.startsWith("重复ID:");
+	}
+
+	private void notifyVisibleRowsUpdated(ArrayList<Integer> updatedRows, int firstPendingRowIndex) {
+		if (updatedRows.isEmpty()) {
+			return;
+		}
+		Collections.sort(updatedRows);
+		int rangeStart = -1;
+		int previousRow = -1;
+		for (Integer rowIndex : updatedRows) {
+			if (rowIndex == null || rowIndex.intValue() >= firstPendingRowIndex || rowIndex.intValue() == previousRow) {
+				continue;
+			}
+			int currentRow = rowIndex.intValue();
+			if (rangeStart == -1) {
+				rangeStart = currentRow;
+				previousRow = currentRow;
+				continue;
+			}
+			if (currentRow == previousRow + 1) {
+				previousRow = currentRow;
+				continue;
+			}
+			notifyVisibleRowsUpdated(rangeStart, previousRow);
+			rangeStart = currentRow;
+			previousRow = currentRow;
+		}
+		if (rangeStart != -1) {
+			notifyVisibleRowsUpdated(rangeStart, previousRow);
+		}
+	}
+
+	private void notifyVisibleRowsUpdated(int startRow, int endRow) {
+		final int modelStartRow = startRow;
+		final int modelEndRow = endRow;
+		SwingUtilities.invokeLater(new Runnable() {
+			@Override
+			public void run() {
+				fireTableRowsUpdated(modelStartRow, modelEndRow);
+			}
+		});
+	}
+
+	private Integer findPreviousVisibleRepresentativeIdForPath(String pathOnly, int currentId) {
+		TreeMap<Integer, OriginalRequestResponse> rows = pathRowsById.get(pathOnly);
+		if (rows == null || rows.isEmpty()) {
+			return null;
+		}
+		for (OriginalRequestResponse requestResponse : rows.headMap(currentId, false).values()) {
+			if (canRepresentPath(requestResponse)) {
+				return requestResponse.getId();
+			}
+		}
+		return null;
+	}
+
+	private void rebuildRowIndex() {
+		rowIndexById.clear();
+		for (int rowIndex = 0; rowIndex < originalRequestResponseList.size(); rowIndex++) {
+			rowIndexById.put(originalRequestResponseList.get(rowIndex).getId(), rowIndex);
+		}
 	}
 	
 	/**
@@ -193,6 +287,71 @@ public class RequestTableModel extends AbstractTableModel {
 		String sig = RequestSignatureHelper.computeMultiDimSignature(orr);
 		signatureCache.put(id, sig);
 		return sig;
+	}
+
+	private void indexDuplicateSignature(OriginalRequestResponse requestResponse) {
+		try {
+			String signature = getOrComputeSignature(requestResponse);
+			if (signature == null || signature.length() == 0) {
+				return;
+			}
+			if (mutedSignatures.contains(signature)) {
+				signatureFirstIdIndex.remove(signature);
+				duplicateSignatureIdIndex.add(requestResponse.getId());
+				return;
+			}
+			Integer firstId = signatureFirstIdIndex.get(signature);
+			if (firstId == null) {
+				signatureFirstIdIndex.put(signature, requestResponse.getId());
+			}
+			else if (requestResponse.getId() > firstId.intValue()) {
+				duplicateSignatureIdIndex.add(requestResponse.getId());
+			}
+			else if (requestResponse.getId() < firstId.intValue()) {
+				duplicateSignatureIdIndex.add(firstId);
+				signatureFirstIdIndex.put(signature, requestResponse.getId());
+			}
+		}
+		catch (Exception ignore) {}
+	}
+
+	private void reindexDuplicateSignature(String signature) {
+		if (signature == null || signature.length() == 0) {
+			return;
+		}
+		signatureFirstIdIndex.remove(signature);
+		ArrayList<OriginalRequestResponse> matchingRows = new ArrayList<OriginalRequestResponse>();
+		for (OriginalRequestResponse requestResponse : originalRequestResponseList) {
+			try {
+				if (signature.equals(getOrComputeSignature(requestResponse))) {
+					duplicateSignatureIdIndex.remove(requestResponse.getId());
+					matchingRows.add(requestResponse);
+				}
+			}
+			catch (Exception ignore) {}
+		}
+		Collections.sort(matchingRows, new Comparator<OriginalRequestResponse>() {
+			@Override
+			public int compare(OriginalRequestResponse left, OriginalRequestResponse right) {
+				return Integer.compare(left.getId(), right.getId());
+			}
+		});
+		if (mutedSignatures.contains(signature)) {
+			for (OriginalRequestResponse requestResponse : matchingRows) {
+				duplicateSignatureIdIndex.add(requestResponse.getId());
+			}
+			return;
+		}
+		boolean firstVisibleRowSeen = false;
+		for (OriginalRequestResponse requestResponse : matchingRows) {
+			if (!firstVisibleRowSeen) {
+				signatureFirstIdIndex.put(signature, requestResponse.getId());
+				firstVisibleRowSeen = true;
+			}
+			else {
+				duplicateSignatureIdIndex.add(requestResponse.getId());
+			}
+		}
 	}
 	
 	public boolean isDuplicate(int id, String endpoint) {
@@ -238,55 +397,20 @@ public class RequestTableModel extends AbstractTableModel {
 	 * For GET/HEAD, falls back to full URL only. For others, uses full URL + SHA-256 of request bytes.
 	 */
 	public boolean isDuplicateByRequestSignature(int id, String method, String host, String fullUrl, byte[] requestBytes) {
-		// 构建缓存键
-		String cacheKey = id + "|" + method + "|" + host + "|" + fullUrl;
-		Boolean cachedResult = duplicateCache.get(cacheKey);
-		if (cachedResult != null) {
-			return cachedResult;
+		if (requestResponseById.containsKey(id)) {
+			return isDuplicateByRequestSignature(id);
 		}
-		
-		// Use helper to compute normalized multi-dim signature
-		String targetKey;
-		// Build a lightweight ORR-like signature for target using method, host, URL and raw request if available
 		String pathPlusQuery = (fullUrl == null) ? "" : fullUrl.substring(fullUrl.indexOf(host) + host.length());
-		String pseudoUrl = pathPlusQuery;
-		OriginalRequestResponseSignatureProxy proxy = new OriginalRequestResponseSignatureProxy(id, method, host, pseudoUrl, requestBytes);
-		targetKey = RequestSignatureHelper.computeMultiDimSignature(proxy);
+		String targetKey = RequestSignatureHelper.computeMultiDimSignature(method, host, pathPlusQuery, requestBytes);
 		if (mutedSignatures.contains(targetKey)) {
-			duplicateCache.put(cacheKey, true);
 			return true;
 		}
-		for (OriginalRequestResponse requestResponse : originalRequestResponseList) {
-			String currentKey = getOrComputeSignature(requestResponse);
-			if (currentKey.equals(targetKey) && requestResponse.getId() < id) {
-				duplicateCache.put(cacheKey, true);
-				return true;
-			}
-		}
-		duplicateCache.put(cacheKey, false);
-		return false;
+		Integer firstId = signatureFirstIdIndex.get(targetKey);
+		return firstId != null && firstId.intValue() < id;
 	}
 
-	// Minimal proxy to reuse signature helper without changing entities
-	private static class OriginalRequestResponseSignatureProxy extends OriginalRequestResponse {
-		public OriginalRequestResponseSignatureProxy(int id, String method, String host, String url, byte[] requestBytes) {
-			super(id, new burp.IHttpRequestResponse() {
-				@Override public byte[] getRequest() { return requestBytes; }
-				@Override public void setRequest(byte[] message) {}
-				@Override public byte[] getResponse() { return null; }
-				@Override public void setResponse(byte[] message) {}
-				@Override public String getComment() { return null; }
-				@Override public void setComment(String comment) {}
-				@Override public String getHighlight() { return null; }
-				@Override public void setHighlight(String color) {}
-				@Override public burp.IHttpService getHttpService() { return new burp.IHttpService() {
-					@Override public String getHost() { return host; }
-					@Override public int getPort() { return 0; }
-					@Override public String getProtocol() { return ""; }
-				}; }
-				@Override public void setHttpService(burp.IHttpService httpService) {}
-			}, method, url, "", 0, 0);
-		}
+	public boolean isDuplicateByRequestSignature(int id) {
+		return duplicateSignatureIdIndex.contains(id);
 	}
 
 	private String buildEndpointKeyNoQuery(String method, String host, String url) {
@@ -303,21 +427,33 @@ public class RequestTableModel extends AbstractTableModel {
 	}
 	
 	public void deleteRequestResponse(OriginalRequestResponse requestResponse) {
+		String pathOnly = extractPathOnly(requestResponse.getUrl());
+		String signature = null;
 		try {
-			String sig = RequestSignatureHelper.computeMultiDimSignature(requestResponse);
-			if (sig != null && sig.length() > 0) {
-				mutedSignatures.add(sig);
+			signature = getOrComputeSignature(requestResponse);
+			if (signature != null && signature.length() > 0) {
+				mutedSignatures.add(signature);
 			}
 		}
 		catch (Exception ignore) {}
 		originalRequestResponseList.remove(requestResponse);
+		requestResponseById.remove(requestResponse.getId());
+		rowIndexById.remove(requestResponse.getId());
+		TreeMap<Integer, OriginalRequestResponse> pathRows = pathRowsById.get(pathOnly);
+		if (pathRows != null) {
+			pathRows.remove(requestResponse.getId());
+			if (pathRows.isEmpty()) {
+				pathRowsById.remove(pathOnly);
+			}
+		}
+		rebuildRowIndex();
         // 删除后清理相关缓存，避免过滤/重复判断使用过期结果
         try {
-            // 清除路径代表ID缓存（保守做法：全部清除）
-            pathToFirstIdCache.clear();
             // 清除签名与重复缓存
             signatureCache.remove(requestResponse.getId());
-            duplicateCache.clear();
+            duplicateSignatureIdIndex.remove(requestResponse.getId());
+            reindexDuplicateSignature(signature);
+            refreshAutoDuplicateCommentsForPath(pathOnly);
         } catch (Exception ignore) {}
 		SwingUtilities.invokeLater(new Runnable() {			
 			@Override
@@ -333,9 +469,12 @@ public class RequestTableModel extends AbstractTableModel {
 		pendingUpdates.clear();
 		mutedSignatures.clear();
 		// 清理缓存
-		pathToFirstIdCache.clear();
+		requestResponseById.clear();
+		rowIndexById.clear();
+		pathRowsById.clear();
 		signatureCache.clear();
-		duplicateCache.clear();
+		signatureFirstIdIndex.clear();
+		duplicateSignatureIdIndex.clear();
 		fireTableDataChanged();
 	}
 	
@@ -349,12 +488,7 @@ public class RequestTableModel extends AbstractTableModel {
 	}
 	
 	public OriginalRequestResponse getOriginalRequestResponseById(int id) {
-		for(OriginalRequestResponse requestResponse : originalRequestResponseList) {
-			if(requestResponse.getId() == id) {
-				return requestResponse;
-			}
-		}
-		return null;
+		return requestResponseById.get(id);
 	}
 	
 	@Override
@@ -367,13 +501,43 @@ public class RequestTableModel extends AbstractTableModel {
 		return originalRequestResponseList.size();
 	}
 
+	private int sessionCodeStartColumn() {
+		return 6;
+	}
+
+	private int originalLengthColumn(int sessionCount) {
+		return sessionCodeStartColumn() + sessionCount;
+	}
+
+	private int sessionLengthStartColumn(int sessionCount) {
+		return originalLengthColumn(sessionCount) + 1;
+	}
+
+	private int sessionDiffStartColumn(int sessionCount) {
+		return sessionLengthStartColumn(sessionCount) + sessionCount;
+	}
+
+	private int sessionStatusStartColumn(int sessionCount) {
+		return sessionDiffStartColumn(sessionCount) + sessionCount;
+	}
+
+	private int commentColumn(int sessionCount) {
+		return sessionStatusStartColumn(sessionCount) + sessionCount;
+	}
+
+	private AnalyzerRequestResponse getSessionResponse(OriginalRequestResponse originalRequestResponse, int sessionIndex) {
+		if (sessionIndex < 0 || sessionIndex >= config.getSessions().size()) {
+			return null;
+		}
+		return config.getSessions().get(sessionIndex).getRequestResponseMap().get(originalRequestResponse.getId());
+	}
+
 	@Override
 	public Object getValueAt(int row, int column) {
 		if(row >= originalRequestResponseList.size()) {
 			return null;
 		}
 		OriginalRequestResponse originalRequestResponse = originalRequestResponseList.get(row);
-		int tempColunmIndex = 5;
 		if(column == 0) {
 			return originalRequestResponse.getId();
 		}
@@ -392,38 +556,27 @@ public class RequestTableModel extends AbstractTableModel {
 		if(column == 5) {
 			return originalRequestResponse.getStatusCode();
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getRequestResponseMap().get(originalRequestResponse.getId()).getStatusCode();
-			}
+		int sessionCount = config.getSessions().size();
+		if(column >= sessionCodeStartColumn() && column < originalLengthColumn(sessionCount)) {
+			AnalyzerRequestResponse response = getSessionResponse(originalRequestResponse, column - sessionCodeStartColumn());
+			return response == null ? null : response.getStatusCode();
 		}
-		tempColunmIndex++;
-		if(column == tempColunmIndex) {
+		if(column == originalLengthColumn(sessionCount)) {
 			return originalRequestResponse.getResponseContentLength();
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getRequestResponseMap().get(originalRequestResponse.getId()).getResponseContentLength();
-			}
+		if(column >= sessionLengthStartColumn(sessionCount) && column < sessionDiffStartColumn(sessionCount)) {
+			AnalyzerRequestResponse response = getSessionResponse(originalRequestResponse, column - sessionLengthStartColumn(sessionCount));
+			return response == null ? null : response.getResponseContentLength();
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				int lengthDiff = originalRequestResponse.getResponseContentLength() - 
-				config.getSessions().get(i).getRequestResponseMap().get(originalRequestResponse.getId()).getResponseContentLength();
-				return lengthDiff;
-			}
+		if(column >= sessionDiffStartColumn(sessionCount) && column < sessionStatusStartColumn(sessionCount)) {
+			AnalyzerRequestResponse response = getSessionResponse(originalRequestResponse, column - sessionDiffStartColumn(sessionCount));
+			return response == null ? null : originalRequestResponse.getResponseContentLength() - response.getResponseContentLength();
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getRequestResponseMap().get(originalRequestResponse.getId()).getStatus();
-			}
+		if(column >= sessionStatusStartColumn(sessionCount) && column < commentColumn(sessionCount)) {
+			AnalyzerRequestResponse response = getSessionResponse(originalRequestResponse, column - sessionStatusStartColumn(sessionCount));
+			return response == null ? null : response.getStatus();
 		}
-		tempColunmIndex++;
-		if(column == tempColunmIndex) {
+		if(column == commentColumn(sessionCount)) {
 			return originalRequestResponse.getComment();
 		}
 		throw new IndexOutOfBoundsException("Column index out of bounds: " + column);
@@ -431,7 +584,6 @@ public class RequestTableModel extends AbstractTableModel {
 
 	@Override
 	public String getColumnName(int column) {
-		int tempColunmIndex = 5;
 		if(column == 0) {
 			return Column.ID.toString();
 		}
@@ -450,36 +602,23 @@ public class RequestTableModel extends AbstractTableModel {
 		if(column == 5) {
 			return Column.Code.toString();
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getName() + " " + Column.Code;
-			}
+		int sessionCount = config.getSessions().size();
+		if(column >= sessionCodeStartColumn() && column < originalLengthColumn(sessionCount)) {
+			return config.getSessions().get(column - sessionCodeStartColumn()).getName() + " " + Column.Code;
 		}
-		tempColunmIndex++;
-		if(column == tempColunmIndex) {
+		if(column == originalLengthColumn(sessionCount)) {
 			return Column.Length.toString();
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getName() + " " + Column.Length;
-			}
+		if(column >= sessionLengthStartColumn(sessionCount) && column < sessionDiffStartColumn(sessionCount)) {
+			return config.getSessions().get(column - sessionLengthStartColumn(sessionCount)).getName() + " " + Column.Length;
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getName() + " " + Column.Diff;
-			}
+		if(column >= sessionDiffStartColumn(sessionCount) && column < sessionStatusStartColumn(sessionCount)) {
+			return config.getSessions().get(column - sessionDiffStartColumn(sessionCount)).getName() + " " + Column.Diff;
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(column == tempColunmIndex) {
-				return config.getSessions().get(i).getName() + " " + Column.Status;
-			}
+		if(column >= sessionStatusStartColumn(sessionCount) && column < commentColumn(sessionCount)) {
+			return config.getSessions().get(column - sessionStatusStartColumn(sessionCount)).getName() + " " + Column.Status;
 		}
-		tempColunmIndex++;
-		if(column == tempColunmIndex) {
+		if(column == commentColumn(sessionCount)) {
 			return Column.Comment.toString();
 		}
 		throw new IndexOutOfBoundsException("Column index out of bounds: " + column);
@@ -487,7 +626,6 @@ public class RequestTableModel extends AbstractTableModel {
 
 	@Override
 	public Class<?> getColumnClass(int columnIndex) {
-		int tempColunmIndex = 5;
 		if(columnIndex == 0) {
 			return Integer.class;
 		}
@@ -506,36 +644,20 @@ public class RequestTableModel extends AbstractTableModel {
 		if(columnIndex == 5) {
 			return Integer.class;
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(columnIndex == tempColunmIndex) {
-				return Integer.class;
-			}
-		}
-		tempColunmIndex++;
-		if(columnIndex == tempColunmIndex) {
+		int sessionCount = config.getSessions().size();
+		if(columnIndex >= sessionCodeStartColumn() && columnIndex < originalLengthColumn(sessionCount)) {
 			return Integer.class;
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(columnIndex == tempColunmIndex) {
-				return Integer.class;
-			}
+		if(columnIndex == originalLengthColumn(sessionCount)) {
+			return Integer.class;
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(columnIndex == tempColunmIndex) {
-				return Integer.class;
-			}
+		if(columnIndex >= sessionLengthStartColumn(sessionCount) && columnIndex < sessionStatusStartColumn(sessionCount)) {
+			return Integer.class;
 		}
-		for(int i=0; i<config.getSessions().size(); i++) {
-			tempColunmIndex++;
-			if(columnIndex == tempColunmIndex) {
-				return BypassConstants.class;
-			}
+		if(columnIndex >= sessionStatusStartColumn(sessionCount) && columnIndex < commentColumn(sessionCount)) {
+			return BypassConstants.class;
 		}
-		tempColunmIndex++;
-		if(columnIndex == tempColunmIndex) {
+		if(columnIndex == commentColumn(sessionCount)) {
 			return String.class;
 		}
 		throw new IndexOutOfBoundsException("Column index out of bounds: " + columnIndex);

@@ -1,11 +1,18 @@
 package com.protect7.authanalyzer.filter;
 
-import burp.IBurpExtenderCallbacks;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
+
+import com.protect7.authanalyzer.montoya.MontoyaUtils;
+
+import burp.api.montoya.core.ToolType;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 public class FileTypeFilter extends RequestFilter {
 	
+	private Set<String> normalizedFileTypes = Collections.emptySet();
 
 	public FileTypeFilter(int filterIndex, String description) {
 		super(filterIndex, description);
@@ -13,21 +20,61 @@ public class FileTypeFilter extends RequestFilter {
 	}
 	
 	@Override
-	public boolean filterRequest(IBurpExtenderCallbacks callbacks, int toolFlag, IRequestInfo requestInfo, IResponseInfo responseInfo) {		
+	public boolean filterRequest(ToolType toolType, HttpRequest request, HttpResponse response) {
 		if(onOffButton.isSelected()) {
-			String url = requestInfo.getUrl().getPath().toString().toLowerCase();
-			for(String fileType : stringLiterals) {
-				if(url.endsWith(fileType.toLowerCase()) && !fileType.equals("")) {
-					incrementFiltered();
-					return true;
-				}
-				else if(responseInfo != null && fileType.toLowerCase().equals(responseInfo.getInferredMimeType().toLowerCase())) {
-					incrementFiltered();
-					return true;
-				}
+			String extension = getPathExtension(request.pathWithoutQuery());
+			boolean hasExtension = !extension.equals("");
+			if(normalizedFileTypes.contains(extension)) {
+				incrementFiltered();
+				return true;
+			}
+			if (hasExtension) {
+				return false;
+			}
+			if(response != null && normalizedFileTypes.contains(MontoyaUtils.mimeName(response.inferredMimeType()).toLowerCase())) {
+				incrementFiltered();
+				return true;
 			}
 		}
 		return false;
+	}
+
+	@Override
+	protected void onFilterStringLiteralsChanged() {
+		HashSet<String> compiled = new HashSet<String>();
+		if (stringLiterals != null) {
+			for(String fileType : stringLiterals) {
+				String normalized = normalizeFileType(fileType);
+				if (!normalized.equals("")) {
+					compiled.add(normalized);
+				}
+			}
+		}
+		normalizedFileTypes = Collections.unmodifiableSet(compiled);
+	}
+
+	private String getPathExtension(String path) {
+		if (path == null) {
+			return "";
+		}
+		String normalizedPath = path.toLowerCase();
+		int slashIndex = normalizedPath.lastIndexOf('/');
+		int dotIndex = normalizedPath.lastIndexOf('.');
+		if (dotIndex <= slashIndex || dotIndex == normalizedPath.length() - 1) {
+			return "";
+		}
+		return normalizedPath.substring(dotIndex + 1);
+	}
+
+	private String normalizeFileType(String fileType) {
+		if (fileType == null) {
+			return "";
+		}
+		String normalizedFileType = fileType.trim().toLowerCase();
+		while (normalizedFileType.startsWith(".")) {
+			normalizedFileType = normalizedFileType.substring(1);
+		}
+		return normalizedFileType;
 	}
 
 	@Override

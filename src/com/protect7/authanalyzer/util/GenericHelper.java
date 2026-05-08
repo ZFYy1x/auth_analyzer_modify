@@ -10,16 +10,13 @@ import javax.swing.JFrame;
 import javax.swing.Timer;
 import com.protect7.authanalyzer.filter.RequestFilter;
 import com.protect7.authanalyzer.gui.main.ConfigurationPanel;
+import com.protect7.authanalyzer.montoya.HttpExchange;
 import com.protect7.authanalyzer.util.Setting.Item;
-import burp.BurpExtender;
-import burp.IBurpExtenderCallbacks;
-import burp.IHttpRequestResponse;
-import burp.IRequestInfo;
-import burp.IResponseInfo;
+import burp.api.montoya.core.ToolType;
 
 public class GenericHelper {
 	
-	public static void repeatRequests(IHttpRequestResponse[] messages, ConfigurationPanel configurationPanel) {
+	public static void repeatRequests(HttpExchange[] messages, ConfigurationPanel configurationPanel) {
 		if(configurationPanel.isPaused()) {
 			configurationPanel.pauseButtonPressed();
 		}
@@ -28,17 +25,12 @@ public class GenericHelper {
 		}
 		if(CurrentConfig.getCurrentConfig().isRunning()) {
 			boolean applyFilters = Setting.getValueAsBoolean(Item.APPLY_FILTER_ON_MANUAL_REPEAT);
-			for(IHttpRequestResponse message : messages) {
+			for(HttpExchange message : messages) {
 				boolean isFiltered = false;
 				if(applyFilters) {
-					IRequestInfo requestInfo = BurpExtender.callbacks.getHelpers().analyzeRequest(message);
-					IResponseInfo responseInfo = null;
-					if(message.getResponse() != null) {
-						responseInfo = BurpExtender.callbacks.getHelpers().analyzeResponse(message.getResponse());
-					}
 					for(int i=0; i<CurrentConfig.getCurrentConfig().getRequestFilterList().size(); i++) {
 						RequestFilter filter = CurrentConfig.getCurrentConfig().getRequestFilterAt(i);
-						if(filter.filterRequest(BurpExtender.callbacks, IBurpExtenderCallbacks.TOOL_PROXY, requestInfo, responseInfo)) {
+						if(filter.filterRequest(ToolType.PROXY, message.getRequest(), message.getResponse())) {
 							isFiltered = true;
 							break;
 						}

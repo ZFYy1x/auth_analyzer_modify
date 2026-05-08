@@ -56,20 +56,21 @@ public class SessionTabbedPane extends JTabbedPane {
 	@Override
 	public void setTitleAt(int index, String title) {
 		super.setTitleAt(index, title);
-		setTabComponentAt(index, new SessionTab(null, title, index));
+		setTabComponentAt(index, new SessionTab(title));
 	}
 
 	@Override
 	public void addTab(String title, Component component) {
 		int index = getTabCount() - 1;
 		insertTab(title, null, component, null, index);
-		setTabComponentAt(index, new SessionTab(component, title, index));
-		getTabComponentAt(index).addMouseListener(new MouseAdapter() {                      
-            @Override
-            public void mouseClicked(MouseEvent e) {
-            	setSelectedIndex(index);
-            }             
-        });
+		SessionTab sessionTab = new SessionTab(title);
+		setTabComponentAt(index, sessionTab);
+		sessionTab.addMouseListener(new MouseAdapter() {
+			@Override
+			public void mouseClicked(MouseEvent e) {
+				selectTabComponent(sessionTab);
+			}
+		});
 	}
 	
 	@Override
@@ -82,15 +83,22 @@ public class SessionTabbedPane extends JTabbedPane {
 		String text = "...";
 		int location = getTabCount();
 		insertTab(text, null, null, null, location);
-		setTabComponentAt(location, new AddSessionTab(null, text));
-		setEnabledAt(location, false);
+		setTabComponentAt(location, new AddSessionTab(text));
+		setEnabledAt(location, true);
+	}
+
+	private void selectTabComponent(Component tabComponent) {
+		int index = indexOfTabComponent(tabComponent);
+		if (index >= 0 && index < getTabCount()) {
+			setSelectedIndex(index);
+		}
 	}
 
 	public class SessionTab extends JPanel {
 
 		private static final long serialVersionUID = 3898047768157638854L;
 
-		public SessionTab(final Component tab, String title, int index) {
+		public SessionTab(String title) {
 			FlowLayout flowLayout = new FlowLayout(FlowLayout.CENTER, 3, 3);
 			setLayout(flowLayout);
 			JLabel titleLabel = new JLabel(title+" ");
@@ -99,7 +107,7 @@ public class SessionTabbedPane extends JTabbedPane {
 			titleLabel.addMouseListener(new MouseAdapter() {
 				@Override
 				public void mouseClicked(MouseEvent e) {
-					setSelectedIndex(index);
+					selectTabComponent(SessionTab.this);
 	            	if(e.getClickCount() == 2 && canModify()) {
 	            		if(renameSessionListener != null) {
 	            			renameSessionListener.renameSession(title);
@@ -128,58 +136,81 @@ public class SessionTabbedPane extends JTabbedPane {
 		
 		private static final long serialVersionUID = 9025776536297919810L;
 
-		public AddSessionTab(final Component tab, String title) {
+		public AddSessionTab(String title) {
 
 			setOpaque(false);
 			FlowLayout flowLayout = new FlowLayout(FlowLayout.CENTER, 3, 3);
 			setLayout(flowLayout);
 			JLabel titleLabel = new JLabel(title);
 			add(titleLabel);
-			titleLabel.addMouseListener(new MouseAdapter() {
+			MouseAdapter mouseAdapter = new MouseAdapter() {
 				@Override
 				public void mouseReleased(MouseEvent event) {
 					if (event.getButton() == MouseEvent.BUTTON3) {
-						JPopupMenu contextMenu = new JPopupMenu();
-						// 在执行任何菜单动作前，优先关闭弹出菜单，避免菜单残留在看板 UI 上
-						final Runnable hideContextMenu = () -> {
-							try {
-								contextMenu.setVisible(false);
-							} catch (Exception ignore) {}
-							try {
-								javax.swing.MenuSelectionManager.defaultManager().clearSelectedPath();
-							} catch (Exception ignore) {}
-						};
-
-						JMenuItem newSessionItem = new JMenuItem("Add New Session");
-						newSessionItem.addActionListener(new ActionListener() {
-
-							@Override
-							public void actionPerformed(ActionEvent e) {
-								hideContextMenu.run();
-								if (canModify() && newSessionListener != null) {
-									newSessionListener.newSession();
-								}
-							}
-						});
-						contextMenu.add(newSessionItem);
-						JMenuItem cloneSessionItem = new JMenuItem("Clone Selected Session");
-						cloneSessionItem.addActionListener(new ActionListener() {
-
-							@Override
-							public void actionPerformed(ActionEvent e) {
-								hideContextMenu.run();
-								if (canModify() && cloneSessionListener != null) {
-									cloneSessionListener.cloneSession();
-								}
-							}
-						});
-						contextMenu.add(cloneSessionItem);
-						contextMenu.show(event.getComponent(), event.getX(), event.getY());
-					} else {
+						showAddSessionContextMenu(event);
+					} else if (event.getButton() == MouseEvent.BUTTON1) {
+						requestNewSession();
+					}
+					else {
 						super.mouseReleased(event);
 					}
 				}
+			};
+			addMouseListener(mouseAdapter);
+			titleLabel.addMouseListener(mouseAdapter);
+		}
+
+		private void showAddSessionContextMenu(MouseEvent event) {
+			JPopupMenu contextMenu = new JPopupMenu();
+			// 在执行任何菜单动作前，优先关闭弹出菜单，避免菜单残留在看板 UI 上
+			final Runnable hideContextMenu = () -> {
+				try {
+					contextMenu.setVisible(false);
+				} catch (Exception ignore) {}
+				try {
+					javax.swing.MenuSelectionManager.defaultManager().clearSelectedPath();
+				} catch (Exception ignore) {}
+			};
+
+			JMenuItem newSessionItem = new JMenuItem("Add New Session");
+			newSessionItem.addActionListener(new ActionListener() {
+
+				@Override
+				public void actionPerformed(ActionEvent e) {
+					hideContextMenu.run();
+					requestNewSession();
+				}
 			});
+			contextMenu.add(newSessionItem);
+			JMenuItem cloneSessionItem = new JMenuItem("Clone Selected Session");
+			cloneSessionItem.addActionListener(new ActionListener() {
+
+				@Override
+				public void actionPerformed(ActionEvent e) {
+					hideContextMenu.run();
+					if (canModify() && cloneSessionListener != null) {
+						cloneSessionListener.cloneSession();
+					}
+				}
+			});
+			contextMenu.add(cloneSessionItem);
+			contextMenu.show(event.getComponent(), event.getX(), event.getY());
+		}
+
+		private void requestNewSession() {
+			int previousIndex = getSelectedIndex();
+			if (canModify() && newSessionListener != null) {
+				newSessionListener.newSession();
+			}
+			int addTabIndex = indexOfTabComponent(AddSessionTab.this);
+			if (addTabIndex >= 0 && getSelectedIndex() == addTabIndex && getTabCount() > 1) {
+				int fallbackIndex = previousIndex >= 0 && previousIndex < getTabCount() - 1
+						? previousIndex
+						: getTabCount() - 2;
+				if (fallbackIndex >= 0) {
+					setSelectedIndex(fallbackIndex);
+				}
+			}
 		}
 	}
 	

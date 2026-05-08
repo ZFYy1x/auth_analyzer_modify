@@ -4,7 +4,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>com.protect7.authanalyzer</groupId>
 	<artifactId>auth_analyzer_modify</artifactId>
-	<version>1.5</version>
+	<version>1.6</version>
 	<description>Burp Extension</description>
 	<properties>
 			<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -61,11 +61,11 @@
 			<artifactId>jsoup</artifactId>
 			<version>1.13.1</version>
 		</dependency>
-		<!-- https://mvnrepository.com/artifact/net.portswigger.burp.extender/burp-extender-api -->
 		<dependency>
-			<groupId>net.portswigger.burp.extender</groupId>
-			<artifactId>burp-extender-api</artifactId>
-			<version>2.3</version>
+			<groupId>net.portswigger.burp.extensions</groupId>
+			<artifactId>montoya-api</artifactId>
+			<version>2026.4</version>
+			<scope>provided</scope>
 		</dependency>
 		<dependency>
 			<groupId>junit</groupId>

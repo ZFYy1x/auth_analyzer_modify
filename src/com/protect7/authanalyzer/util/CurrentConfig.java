@@ -3,14 +3,15 @@ package com.protect7.authanalyzer.util;
 import java.util.ArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicInteger;
 import com.protect7.authanalyzer.controller.RequestController;
 import com.protect7.authanalyzer.entities.Session;
 import com.protect7.authanalyzer.entities.Token;
 import com.protect7.authanalyzer.filter.RequestFilter;
 import com.protect7.authanalyzer.gui.util.RequestTableModel;
+import com.protect7.authanalyzer.montoya.HttpExchange;
 
 import burp.BurpExtender;
-import burp.IHttpRequestResponse;
 
 public class CurrentConfig {
 
@@ -25,7 +26,7 @@ public class CurrentConfig {
 	private RequestTableModel tableModel = null;
 	private boolean running = false;
 	private boolean dropOriginal = false;
-	private volatile int mapId = 0;
+	private final AtomicInteger mapId = new AtomicInteger(0);
 	private boolean respectResponseCodeForSameStatus = true;
 	private boolean respectResponseCodeForSimilarStatus = true; 
 	private int deviationForSimilarStatus = 5;
@@ -34,7 +35,7 @@ public class CurrentConfig {
 	private CurrentConfig() {
 	}
 	
-	public void performAuthAnalyzerRequest(IHttpRequestResponse messageInfo) {
+	public void performAuthAnalyzerRequest(HttpExchange messageInfo) {
 		analyzerThreadExecutor.execute(new Runnable() {				
 			@Override
 			public void run() {
@@ -118,8 +119,7 @@ public class CurrentConfig {
 	}
 	
 	public int getNextMapId() {
-		mapId++;
-		return mapId;
+		return mapId.incrementAndGet();
 	}
 	
 	public void setDropOriginal(boolean dropOriginal) {

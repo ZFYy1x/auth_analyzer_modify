@@ -1,23 +1,31 @@
 package com.protect7.authanalyzer.controller;
 
+import java.awt.Component;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
+
 import com.protect7.authanalyzer.entities.Token;
 import com.protect7.authanalyzer.gui.dialog.RepeatRequestFilterDialog;
 import com.protect7.authanalyzer.gui.entity.SessionPanel;
 import com.protect7.authanalyzer.gui.entity.TokenPanel;
 import com.protect7.authanalyzer.gui.main.ConfigurationPanel;
+import com.protect7.authanalyzer.montoya.HttpExchange;
 import com.protect7.authanalyzer.util.ExtractionHelper;
 import com.protect7.authanalyzer.util.GenericHelper;
 import com.protect7.authanalyzer.util.Globals;
-import burp.IContextMenuFactory;
-import burp.IContextMenuInvocation;
-import burp.IHttpRequestResponse;
 
-public class ContextMenuController implements IContextMenuFactory {
+import burp.api.montoya.core.Range;
+import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
+import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
+import burp.api.montoya.ui.contextmenu.InvocationType;
+import burp.api.montoya.ui.contextmenu.MessageEditorHttpRequestResponse;
+
+public class ContextMenuController implements ContextMenuItemsProvider {
 
 	private final ConfigurationPanel configurationPanel;
 	private static final int MAX_CHAR_AMOUNT = 60;
@@ -30,30 +38,31 @@ public class ContextMenuController implements IContextMenuFactory {
 	}
 
 	@Override
-	public List<JMenuItem> createMenuItems(IContextMenuInvocation invocation) {
-		List<JMenuItem> menuItems = new ArrayList<JMenuItem>();
+	public List<Component> provideMenuItems(ContextMenuEvent event) {
+		List<Component> menuItems = new ArrayList<Component>();
 		JMenu authAnalyzerMenu = new JMenu(Globals.EXTENSION_NAME);
-		int[] selection = invocation.getSelectionBounds();
-		byte iContext = invocation.getInvocationContext();
-		if(invocation.getSelectedMessages() != null && invocation.getSelectedMessages().length > 0) {
+		int[] selection = getSelectionBounds(event);
+		InvocationType invocationType = event.invocationType();
+		HttpExchange[] selectedMessages = getSelectedMessages(event);
+		if(selectedMessages != null && selectedMessages.length > 0) {
 			// Set Repeat Request Menu
-			addRepeatRequestMenu(authAnalyzerMenu, invocation);
-			if(invocation.getSelectedMessages().length > 1) {
-				addRepeatWithOptionsMenu(authAnalyzerMenu, invocation);
+			addRepeatRequestMenu(authAnalyzerMenu, selectedMessages);
+			if(selectedMessages.length > 1) {
+				addRepeatWithOptionsMenu(authAnalyzerMenu, selectedMessages);
 			}
 			authAnalyzerMenu.addSeparator();
 			// Set Token Auto Add Menu
-			addAutoSetTokenMenu(authAnalyzerMenu, invocation);
+			addAutoSetTokenMenu(authAnalyzerMenu, selectedMessages);
 		}
-		if (selection != null && selection[0] != selection[1]) {
-			if (iContext == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_REQUEST
-					|| iContext == IContextMenuInvocation.CONTEXT_MESSAGE_VIEWER_REQUEST) {
+		if (selection != null && selection[0] != selection[1] && selectedMessages.length > 0) {
+			if (invocationType == InvocationType.MESSAGE_EDITOR_REQUEST
+					|| invocationType == InvocationType.MESSAGE_VIEWER_REQUEST) {
 				authAnalyzerMenu.addSeparator();
-				IHttpRequestResponse message = invocation.getSelectedMessages()[0];
-				if (message.getRequest() == null) {
+				HttpExchange message = selectedMessages[0];
+				if (message.getRequestBytes() == null) {
 					return menuItems;
 				}
-				String selectedText = new String(Arrays.copyOfRange(message.getRequest(), selection[0], selection[1]));
+				String selectedText = new String(Arrays.copyOfRange(message.getRequestBytes(), selection[0], selection[1]));
 				if (isHeader(selectedText)) {
 					// Set header menu
 					addHeaderMenu(authAnalyzerMenu, selectedText);
@@ -64,11 +73,14 @@ public class ContextMenuController implements IContextMenuFactory {
 					// Static Token Value
 					addTokenStaticValueMenu(authAnalyzerMenu, selectedText);
 				}
-			} else if (iContext == IContextMenuInvocation.CONTEXT_MESSAGE_EDITOR_RESPONSE
-					|| iContext == IContextMenuInvocation.CONTEXT_MESSAGE_VIEWER_RESPONSE) {
+			} else if (invocationType == InvocationType.MESSAGE_EDITOR_RESPONSE
+					|| invocationType == InvocationType.MESSAGE_VIEWER_RESPONSE) {
 				authAnalyzerMenu.addSeparator();
-				IHttpRequestResponse message = invocation.getSelectedMessages()[0];
-				String selectedText = new String(Arrays.copyOfRange(message.getResponse(), selection[0], selection[1]));
+				HttpExchange message = selectedMessages[0];
+				if (message.getResponseBytes() == null) {
+					return menuItems;
+				}
+				String selectedText = new String(Arrays.copyOfRange(message.getResponseBytes(), selection[0], selection[1]));
 				// Token Name (for e.g. Session Cookie)
 				addTokenNameMenu(authAnalyzerMenu, selectedText);
 				// Set Token Extract Field Name
@@ -76,13 +88,35 @@ public class ContextMenuController implements IContextMenuFactory {
 				// Set Static Token Value
 				addTokenStaticValueMenu(authAnalyzerMenu, selectedText);
 				// Set From To String. Only show menu if no line feed is selected
-				addTokenFromToExtractMenu(authAnalyzerMenu, selectedText, selection, message.getResponse());
+				addTokenFromToExtractMenu(authAnalyzerMenu, selectedText, selection, message.getResponseBytes());
 			}
 		}
 		if(authAnalyzerMenu.getItemCount() > 0) {
 			menuItems.add(authAnalyzerMenu);
 		}
 		return menuItems;
+	}
+
+	private HttpExchange[] getSelectedMessages(ContextMenuEvent event) {
+		List<HttpRequestResponse> selectedRequestResponses = new ArrayList<HttpRequestResponse>(event.selectedRequestResponses());
+		if (selectedRequestResponses.isEmpty() && event.messageEditorRequestResponse().isPresent()) {
+			MessageEditorHttpRequestResponse editorMessage = event.messageEditorRequestResponse().get();
+			selectedRequestResponses.add(editorMessage.requestResponse());
+		}
+		HttpExchange[] messages = new HttpExchange[selectedRequestResponses.size()];
+		for (int i = 0; i < selectedRequestResponses.size(); i++) {
+			messages[i] = HttpExchange.from(selectedRequestResponses.get(i));
+		}
+		return messages;
+	}
+
+	private int[] getSelectionBounds(ContextMenuEvent event) {
+		if (event.messageEditorRequestResponse().isPresent()
+				&& event.messageEditorRequestResponse().get().selectionOffsets().isPresent()) {
+			Range range = event.messageEditorRequestResponse().get().selectionOffsets().get();
+			return new int[] { range.startIndexInclusive(), range.endIndexExclusive() };
+		}
+		return null;
 	}
 	
 	private boolean isHeader(String selectedText) {
@@ -95,33 +129,33 @@ public class ContextMenuController implements IContextMenuFactory {
 		return true;
 	}
 	
-	private void addRepeatRequestMenu(JMenu authAnalyzerMenu, IContextMenuInvocation invocation) {
+	private void addRepeatRequestMenu(JMenu authAnalyzerMenu, HttpExchange[] selectedMessages) {
 		JMenuItem repeatRequests;
-		if(invocation.getSelectedMessages().length == 1) {
+		if(selectedMessages.length == 1) {
 			repeatRequests = new JMenuItem("Repeat Request (1)");
 		}
 		else {
-			repeatRequests = new JMenuItem("Repeat All Requests (" + invocation.getSelectedMessages().length + ")");
+			repeatRequests = new JMenuItem("Repeat All Requests (" + selectedMessages.length + ")");
 		}
 		repeatRequests.addActionListener(e -> {
-			GenericHelper.repeatRequests(invocation.getSelectedMessages(), configurationPanel);
+			GenericHelper.repeatRequests(selectedMessages, configurationPanel);
 		});
 		authAnalyzerMenu.add(repeatRequests);	
 	}
 	
-	private void addRepeatWithOptionsMenu(JMenu authAnalyzerMenu, IContextMenuInvocation invocation) {
+	private void addRepeatWithOptionsMenu(JMenu authAnalyzerMenu, HttpExchange[] selectedMessages) {
 		JMenuItem repeatRequests = new JMenuItem("Repeat Requests with Filter Options");
-		repeatRequests.addActionListener(e1 -> new RepeatRequestFilterDialog(authAnalyzerMenu, configurationPanel, invocation.getSelectedMessages()));
+		repeatRequests.addActionListener(e1 -> new RepeatRequestFilterDialog(authAnalyzerMenu, configurationPanel, selectedMessages));
 		authAnalyzerMenu.add(repeatRequests);
 	}
 	
-	private void addAutoSetTokenMenu(JMenu authAnalyzerMenu, IContextMenuInvocation invocation) {
+	private void addAutoSetTokenMenu(JMenu authAnalyzerMenu, HttpExchange[] selectedMessages) {
 		JMenu autoSetParams = new JMenu("Set Parameters Automatically");
 		for (String sessionName : configurationPanel.getSessionNames()) {
 			JMenuItem sessionItem = new JMenuItem("Session: " + sessionName);
 			sessionItem.addActionListener(e -> {
 				ArrayList<Token> tokens = ExtractionHelper
-						.extractTokensFromMessages(invocation.getSelectedMessages());
+						.extractTokensFromMessages(selectedMessages);
 				for (Token token : tokens) {
 					configurationPanel.getSessionPanelByName(sessionName).addToken(token);
 				}
@@ -134,7 +168,7 @@ public class ContextMenuController implements IContextMenuFactory {
 		final String newSessionName = getNewSessionName();
 		newSessionItem.addActionListener(e -> {
 			SessionPanel sessionPanel = configurationPanel.createSession(newSessionName, "");
-			ArrayList<Token> tokens = ExtractionHelper.extractTokensFromMessages(invocation.getSelectedMessages());
+			ArrayList<Token> tokens = ExtractionHelper.extractTokensFromMessages(selectedMessages);
 			for (Token token : tokens) {
 				sessionPanel.addToken(token);
 			}

@@ -26,7 +26,7 @@ public class MainPanel extends JPanel {
 		splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, scrollPane, centerPanel);
 		splitPane.setDividerSize(5);
 		add(splitPane, BorderLayout.CENTER);
-		BurpExtender.callbacks.registerContextMenuFactory(new ContextMenuController(configurationPanel));
+		BurpExtender.register(BurpExtender.api.userInterface().registerContextMenuItemsProvider(new ContextMenuController(configurationPanel)));
 		configurationPanel.loadAutoStoredData();
 	}
 	
