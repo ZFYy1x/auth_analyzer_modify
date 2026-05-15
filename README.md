@@ -1,6 +1,6 @@
 # 越权测试插件
 
-![0782bcb1-0e8d-4fcd-abcc-0be792c67206](.\resources\0782bcb1-0e8d-4fcd-abcc-0be792c67206.png)
+![0782bcb1-0e8d-4fcd-abcc-0be792c67206](resources/0782bcb1-0e8d-4fcd-abcc-0be792c67206.png)
 
 ## 针对原版auth_analyzer插件做出部分修改
 
