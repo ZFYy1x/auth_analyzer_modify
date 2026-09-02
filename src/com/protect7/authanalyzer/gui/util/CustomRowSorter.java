@@ -3,6 +3,7 @@ package com.protect7.authanalyzer.gui.util;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 import javax.swing.JCheckBox;
 import javax.swing.RowFilter;
 import javax.swing.RowSorter;
@@ -21,6 +22,10 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 	private static final int SEARCH_CONTENT_CACHE_SIZE = 100;
 	private final Map<Integer, String> requestContentCache = createSearchContentCache();
 	private final Map<Integer, String> responseContentCache = createSearchContentCache();
+	// 通配符搜索模式缓存（{%} 表示任意字符）
+	private static final String WILDCARD_TOKEN = "{%}";
+	private static String cachedPatternKey = null;
+	private static Pattern cachedPattern = null;
 	
 	public CustomRowSorter(CenterPanel centerPanel, RequestTableModel tableModel, JCheckBox showOnlyMarked, JCheckBox showDuplicates, JCheckBox showBypassed, 
 			JCheckBox showPotentialBypassed, JCheckBox showNotBypassed, JCheckBox showNA, PlaceholderTextField filterText,
@@ -44,8 +49,8 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 				String searchText = filterText.getText();
 				if(searchText != null && !searchText.equals("")) {
 					boolean doShow = false;
-					if(searchInPath.isSelected()) {
-						boolean contained = entry.getStringValue(3).toString().contains(searchText);
+				if(searchInPath.isSelected()) {
+					boolean contained = matchesSearch(entry.getStringValue(3).toString(), searchText);
 						if((contained && !negativeSearch.isSelected()) || (!contained && negativeSearch.isSelected())) {
 							doShow = true;
 						}
@@ -55,7 +60,7 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 							int id = Integer.parseInt(entry.getStringValue(0));
 							String requestContent = getRequestContent(id);
 							if (requestContent != null) {
-								boolean contained = requestContent.contains(searchText);
+								boolean contained = matchesSearch(requestContent, searchText);
 								if((contained && !negativeSearch.isSelected()) || (!contained && negativeSearch.isSelected())) {
 									doShow = true;
 								}
@@ -70,7 +75,7 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 							int id = Integer.parseInt(entry.getStringValue(0));
 							String responseContent = getResponseContent(id);
 							if (responseContent != null) {
-								boolean contained = responseContent.contains(searchText);
+								boolean contained = matchesSearch(responseContent, searchText);
 								if((contained && !negativeSearch.isSelected()) || (!contained && negativeSearch.isSelected())) {
 									doShow = true;
 								}
@@ -142,6 +147,43 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 				return size() > SEARCH_CONTENT_CACHE_SIZE;
 			}
 		};
+	}
+
+	/**
+	 * 判断内容是否命中搜索词。
+	 * 普通搜索词：等价于 contains 子串匹配。
+	 * 含 {%} 通配符：将 {%} 视为"匹配任意字符"，其余部分按字面量处理，
+	 * 例如 /api/reports/authorized/{%}/html 可命中 /api/reports/authorized/123/html。
+	 */
+	private static boolean matchesSearch(String content, String searchText) {
+		if (content == null || searchText == null) {
+			return false;
+		}
+		if (!searchText.contains(WILDCARD_TOKEN)) {
+			return content.contains(searchText);
+		}
+		return getWildcardPattern(searchText).matcher(content).find();
+	}
+
+	/**
+	 * 将含 {%} 的搜索词编译为正则（带缓存），字面量部分自动转义，
+	 * 仅 {%} 被解释为 .*，避免用户输入的正则元字符产生歧义。
+	 */
+	private static Pattern getWildcardPattern(String searchText) {
+		if (!searchText.equals(cachedPatternKey) || cachedPattern == null) {
+			StringBuilder regex = new StringBuilder();
+			int from = 0;
+			int idx;
+			while ((idx = searchText.indexOf(WILDCARD_TOKEN, from)) >= 0) {
+				regex.append(Pattern.quote(searchText.substring(from, idx)));
+				regex.append(".*");
+				from = idx + WILDCARD_TOKEN.length();
+			}
+			regex.append(Pattern.quote(searchText.substring(from)));
+			cachedPattern = Pattern.compile(regex.toString());
+			cachedPatternKey = searchText;
+		}
+		return cachedPattern;
 	}
 	
 	private String getRequestContent(int id) {

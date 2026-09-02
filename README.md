@@ -4,6 +4,30 @@
 
 ## 版本更新
 
+### V1.7版本修改
+
+1、功能增强
+- 看板功能搜索支持 `{%}` 通配符变量：`{%}` 代表任意字符（可多个、可含空串），用于统一检索含动态参数的路径
+- 语法示例：
+
+  | 搜索词 | 可命中示例 | 说明 |
+  |---|---|---|
+  | `/api/reports/authorized/{%}/html` | `/api/reports/authorized/123/html` | `{%}` 匹配任意一段字符 |
+  | `/api/{%}/authorized/{%}/html` | `/api/v1/authorized/99/html` | 支持多个 `{%}` 同时使用 |
+  | `/api/{%}.jsp` | `/api/report.jsp` | `{%}` 可出现在任意位置 |
+  | `report` | `my_report_1` | 不含 `{%}` 时保持普通子串搜索 |
+
+- 生效范围：勾选的「路径 / 请求 / 响应」三种搜索目标全部支持，与「反向搜索」可同时使用
+- 搜索词中非 `{%}` 部分按字面量匹配（`Pattern.quote` 转义），无正则歧义；正则编译带缓存，不影响大数据量性能
+- 涉及代码：`CustomRowSorter.java`（`matchesSearch`/`getWildcardPattern`）、`CenterPanel.java`（搜索框提示）
+
+2、界面优化
+- 搜索框 placeholder 改为「输入搜索模式，{%} 匹配任意字符...」，tooltip 附带 `{%}` 用法示例
+
+3、版本与构建
+- 迭代版本号 1.6 → 1.7（pom.xml、BappManifest.bmf、打包产物同步更新）
+- 打包产物：`target/auth_analyzer_modify-1.7.jar`、`target/auth_analyzer_modify-1.7-jar-with-dependencies.jar`（Burp 加载用）
+
 ### V1.6版本修改
 
 1、Burp API 迁移
@@ -301,4 +325,5 @@ For instance, we don’t want to process a static JavaScript file because it is 
 *	Auto save current configuration
 * Save to file and load from file current configuration
 * Search function in repeated requests
+* Wildcard `{%}` support in table search (matches any chars, e.g. `/api/reports/authorized/{%}/html`)
 * Semi Automated Authoriztaion Testing

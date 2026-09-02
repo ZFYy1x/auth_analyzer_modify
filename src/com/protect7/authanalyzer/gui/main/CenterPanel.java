@@ -115,7 +115,8 @@ public class CenterPanel extends JPanel {
 		filterButton.setIcon(new ImageIcon(this.getClass().getClassLoader().getResource("filter.png")));
 		filterButton.addActionListener(e -> showTableFilterDialog(tableControlPanel));
 		filterText = new PlaceholderTextField(20);
-		filterText.setPlaceholder("输入搜索模式...");
+		filterText.setPlaceholder("输入搜索模式，{%} 匹配任意字符...");
+		filterText.setToolTipText("<html>普通关键词：子串匹配<br>通配符：{%} 代表任意字符（可多个）<br>例如 /api/reports/authorized/{%}/html<br>可命中 /api/reports/authorized/123/html</html>");
 		searchButton.addActionListener(e -> {
 			searchButton.setEnabled(false);
 			try {
