@@ -12,6 +12,10 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.stream.JsonWriter;
 import com.protect7.authanalyzer.entities.AnalyzerRequestResponse;
 import com.protect7.authanalyzer.entities.OriginalRequestResponse;
@@ -182,7 +186,12 @@ public class DataExporter {
 	}
 
 	public static final String SNAPSHOT_FORMAT = "AuthAnalyzerBoardBackup";
-	public static final int SNAPSHOT_VERSION = 1;
+	/**
+	 * v2: 顶层新增 sessionConfigs —— 每个会话的完整配置(头替换/移除、作用域、Token、匹配替换)，
+	 * 由 Session 的 Gson 排除策略序列化，格式与 DataStorageProvider 的 setup JSON 中
+	 * sessions 数组一致，导入端可直接按名恢复缺失会话。v1 备份(无 sessionConfigs)仍可导入。
+	 */
+	public static final int SNAPSHOT_VERSION = 2;
 
 	/**
 	 * 导出可回读的"看板备份"JSON 快照。
@@ -204,6 +213,22 @@ public class DataExporter {
 			writer.beginArray();
 			for (Session session : sessions) {
 				writer.value(session.getName());
+			}
+			writer.endArray();
+			// v2: 会话完整配置（与 DataStorageProvider setup JSON 的 sessions 数组同构），
+			// 供导入端在当前配置缺失同名会话时按配置自动重建会话
+			writer.name("sessionConfigs");
+			writer.beginArray();
+			for (Session session : sessions) {
+				try {
+					Gson gson = new GsonBuilder().setExclusionStrategies(session.getExclusionStrategy()).create();
+					JsonObject sessionConfig = JsonParser.parseString(gson.toJson(session)).getAsJsonObject();
+					sessionConfig.addProperty("name", session.getName());
+					gson.toJson(sessionConfig, writer);
+				} catch (Exception e) {
+					MontoyaUtils.logError("Board snapshot: failed to serialize session config of '"
+							+ session.getName() + "'. " + e.getMessage());
+				}
 			}
 			writer.endArray();
 			writer.name("rows");

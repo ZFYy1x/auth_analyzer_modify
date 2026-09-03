@@ -3,7 +3,10 @@ package com.protect7.authanalyzer.gui.main;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Dialog;
+import java.awt.Font;
 import java.awt.FlowLayout;
+import java.awt.Window;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
@@ -20,6 +23,8 @@ import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JDialog;
+import javax.swing.JEditorPane;
 import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JMenu;
@@ -37,6 +42,7 @@ import javax.swing.MenuSelectionManager;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
+import javax.swing.UIManager;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 import javax.swing.event.RowSorterEvent;
@@ -44,6 +50,7 @@ import javax.swing.event.RowSorterListener;
 import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.border.EmptyBorder;
 import com.protect7.authanalyzer.entities.AnalyzerRequestResponse;
 import com.protect7.authanalyzer.entities.OriginalRequestResponse;
 import com.protect7.authanalyzer.entities.Session;
@@ -744,7 +751,77 @@ public class CenterPanel extends JPanel {
 		});
 	}
 
-	// 从备份 JSON 覆盖恢复看板数据（会先清空当前看板）
+		/**
+	 * 导入流程的提示弹窗。Burp 对 JOptionPane 按纯文本渲染（HTML 标签字面可见），故改用自建模态
+	 * JDialog + JEditorPane。字体与配色跟随当前 LAF（与插件其它 UI 一致，light/dark 主题自动适配），
+	 * 全文统一字号，强调仅用颜色/加粗区分，不改变字号。
+	 *
+	 * @param withCancel true 显示"确定/取消"并返回用户选择；false 仅"确定"。
+	 */
+	private boolean showHtmlDialog(String title, String htmlBody, boolean withCancel) {
+		Window owner = SwingUtilities.getWindowAncestor(this);
+		final JDialog dialog = new JDialog(owner, title, Dialog.ModalityType.APPLICATION_MODAL);
+
+		// 跟随插件当前 LAF 的字体与配色，保证与其它 UI 一致
+		Font uiFont = UIManager.getFont("Label.font");
+		String family = uiFont == null ? "SansSerif" : uiFont.getFamily();
+		int sizePt = uiFont == null ? 12 : uiFont.getSize();
+		Color fg = UIManager.getColor("Label.foreground");
+		Color bg = UIManager.getColor("Panel.background");
+		if (fg == null) {
+			fg = Color.BLACK;
+		}
+		if (bg == null) {
+			bg = Color.WHITE;
+		}
+
+		// 统一样式：全文同一字体/字号；强调词用颜色区分（.em 橙 / .ok 绿 / .warn 红 / .muted 灰）
+		String css = "body{font-family:" + family + ";font-size:" + sizePt + "pt;color:#" + hexColor(fg)
+				+ ";background:#" + hexColor(bg) + ";margin:0;width:440px;}"
+				+ ".em{color:#f06e00;}.ok{color:#009900;}.warn{color:#d32f2f;}.muted{color:#888888;}";
+		JEditorPane pane = new JEditorPane("text/html",
+				"<html><head><style>" + css + "</style></head><body>" + htmlBody + "</body></html>");
+		pane.setEditable(false);
+		pane.setOpaque(true);
+		pane.setBackground(bg);
+		pane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
+		pane.setBorder(new EmptyBorder(16, 18, 12, 18));
+
+		final boolean[] confirmed = new boolean[1];
+		JButton ok = new JButton("确定");
+		ok.addActionListener(e -> {
+			confirmed[0] = true;
+			dialog.dispose();
+		});
+		JPanel buttons = new JPanel(new FlowLayout(FlowLayout.CENTER, 12, 8));
+		buttons.add(ok);
+		if (withCancel) {
+			JButton cancel = new JButton("取消");
+			cancel.addActionListener(e -> dialog.dispose());
+			buttons.add(cancel);
+		}
+
+		JScrollPane scroll = new JScrollPane(pane);
+		scroll.setBorder(null);
+		scroll.getViewport().setBackground(bg);
+		dialog.getContentPane().setLayout(new BorderLayout());
+		dialog.getContentPane().add(scroll, BorderLayout.CENTER);
+		dialog.getContentPane().add(buttons, BorderLayout.SOUTH);
+		dialog.getRootPane().setDefaultButton(ok);
+		dialog.pack();
+		dialog.setLocationRelativeTo(owner);
+		dialog.setVisible(true);
+		return confirmed[0];
+	}
+
+	private static String hexColor(Color color) {
+		return String.format("%02x%02x%02x", color.getRed(), color.getGreen(), color.getBlue());
+	}
+
+
+	// 从备份 JSON 覆盖恢复看板数据（会先清空当前看板）。
+	// v2 备份含会话完整配置：当前配置缺失备份中的会话时，自动按配置重建会话
+	// （含头替换/移除、Token、匹配替换规则），避免会话数据因"会话未匹配"被全部跳过。
 	private void importBoardBackup(JButton button) {
 		JFileChooser chooser = new JFileChooser();
 		chooser.setFileFilter(new FileNameExtensionFilter("AuthAnalyzer 看板备份 (*.json)", "json"));
@@ -759,59 +836,129 @@ public class CenterPanel extends JPanel {
 		}
 		String runningWarning = "";
 		if (config.isRunning()) {
-			runningWarning = "<br><font color='red'>⚠ 分析仍在运行，导入期间新到达的请求可能与恢复数据交错，强烈建议先停止分析再导入。</font>";
+			runningWarning = "<br><span class='warn'>⚠ 分析仍在运行：缺失的会话将不会被自动创建，请先停止分析再导入。</span>";
 		}
-		int confirm = JOptionPane.showConfirmDialog(this,
-				"<html>将从备份<strong>覆盖恢复</strong>看板数据。<br>导入前会<strong>清空当前看板</strong>（含所有会话结果），请确认。<br><br>"
-						+ "备份文件: " + escapeHtml(file.getAbsolutePath()) + runningWarning + "</html>",
-				"导入看板备份", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
-		if (confirm != JOptionPane.OK_OPTION) {
+		boolean confirmed = showHtmlDialog("导入看板备份",
+				"将从备份<span class='em'><b>覆盖恢复</b></span>看板数据（先清空当前看板与所有会话结果）。<br>"
+				+ "当前缺失的备份会话将按备份配置<span class='em'><b>自动创建</b></span>（含头替换/Token/匹配替换）。<br>"
+				+ "<span class='muted'>备份文件: " + escapeHtml(file.getAbsolutePath()) + "</span>"
+				+ runningWarning,
+				true);
+		if (!confirmed) {
 			return;
 		}
 		button.setIcon(loaderImageIcon);
 		button.setEnabled(false);
 		CompletableFuture.runAsync(() -> {
-			ImportResult result = DataImporter.restore(file, config, tableModel);
+			importBoardBackupAsync(file, button);
+		});
+	}
+
+	/** 导入主流程（后台线程）：prepare 解析 → EDT 恢复缺失会话+重建表格列 → restoreRows 灌数据 → EDT 结果弹窗 */
+	private void importBoardBackupAsync(File file, JButton button) {
+		try {
+			// 阶段一：解析并校验备份（不触碰当前看板；失败则数据未被改动）
+			DataImporter.ParsedSnapshot snapshot;
+			try {
+				snapshot = DataImporter.prepare(file);
+			} catch (Exception e) {
+				final String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+				SwingUtilities.invokeLater(() -> {
+					button.setIcon(null);
+					button.setEnabled(true);
+				JOptionPane.showMessageDialog(this,
+						"导入失败，当前看板数据未被改动。原因: " + escapeHtml(reason), "导入看板备份",
+						JOptionPane.ERROR_MESSAGE);
+				});
+				return;
+			}
+
+			// 计算当前配置缺失的备份会话
+			ArrayList<String> missingSessions = new ArrayList<String>();
+			for (String sessionName : snapshot.backupSessionNames) {
+				if (config.getSessionByName(sessionName) == null) {
+					missingSessions.add(sessionName);
+				}
+			}
+
+			// 会话恢复：非运行状态时，在 EDT 上补建缺失的会话面板并物化 Session 对象
+			final ArrayList<String> restoredSessions = new ArrayList<String>();
+			final boolean sessionRestoreAttempted = !missingSessions.isEmpty() && !config.isRunning();
+			if (sessionRestoreAttempted) {
+				SwingUtilities.invokeAndWait(() -> {
+					restoredSessions.addAll(mainPanel.getConfigurationPanel()
+							.restoreSessionsFromSnapshot(snapshot.sessionConfigs, missingSessions));
+					// 物化 Session 对象到 config（不启动分析），使会话数据可写入
+					mainPanel.getConfigurationPanel().createSessionObjects(false);
+					mainPanel.getConfigurationPanel().markSessionListSynced();
+				});
+			}
+
+			// 表格列结构重建（会话数量变化影响列结构），并取新表格模型供灌数据
+			final RequestTableModel[] modelHolder = new RequestTableModel[1];
+			SwingUtilities.invokeAndWait(() -> {
+				initCenterPanel();
+				modelHolder[0] = tableModel;
+			});
+
+			// 阶段二：清空当前看板并批量恢复数据（含写入各 Session 结果）
+			ImportResult result = DataImporter.restoreRows(snapshot, config, modelHolder[0]);
+
 			SwingUtilities.invokeLater(() -> {
 				button.setIcon(null);
 				button.setEnabled(true);
-				if (result.error != null) {
-					JOptionPane.showMessageDialog(this,
-							"导入失败，当前看板数据未被改动。<br>原因: " + escapeHtml(result.error), "导入看板备份",
-							JOptionPane.ERROR_MESSAGE);
-					return;
+			if (result.error != null) {
+				JOptionPane.showMessageDialog(this,
+						"导入失败，当前看板数据未被改动。原因: " + escapeHtml(result.error), "导入看板备份",
+						JOptionPane.ERROR_MESSAGE);
+				return;
+			}
+			resetBoardFilterAfterImport();
+			refreshTableAfterDataChange();
+			StringBuilder message = new StringBuilder("<span class='ok'><b>看板已从备份恢复</b></span><br>");
+			message.append("· 恢复行数: ").append(result.restoredRows).append(" / ").append(result.totalRows).append("<br>");
+			message.append("· 会话结果: ").append(result.matchedSessionEntries);
+			message.append("（跳过 ").append(result.skippedSessionEntries).append("）<br>");
+				if (!restoredSessions.isEmpty()) {
+					message.append("· 自动创建会话: ");
+					for (int i = 0; i < restoredSessions.size(); i++) {
+						message.append(escapeHtml(restoredSessions.get(i)));
+						if (i < restoredSessions.size() - 1) {
+							message.append(", ");
+						}
+					}
+					message.append("<br>");
+					if (snapshot.sessionConfigs == null) {
+						message.append("<span class='muted'>（v1 备份未含会话配置，以上会话为默认空配置，"
+								+ "头替换规则等请自行补充）</span><br>");
+					}
 				}
-				resetBoardFilterAfterImport();
-				refreshTableAfterDataChange();
-				StringBuilder message = new StringBuilder("<html>看板已从备份恢复：<br>");
-				message.append("· 恢复行数: ").append(result.restoredRows).append(" / ").append(result.totalRows).append("<br>");
-				message.append("· 恢复会话结果: ").append(result.matchedSessionEntries);
-				message.append("，跳过（会话未匹配）: ").append(result.skippedSessionEntries).append("<br>");
 				if (result.skippedInvalidRows > 0) {
 					message.append("· 跳过无效行: ").append(result.skippedInvalidRows).append("<br>");
 				}
 				if (!result.unknownSessions.isEmpty()) {
-					message.append("<br>⚠ 以下备份会话在当前配置中不存在，其数据已跳过：<br>");
+					if (config.isRunning() && sessionRestoreAttempted == false && !missingSessions.isEmpty()) {
+						message.append("<br><span class='warn'>⚠ 分析运行中，以下备份会话未被自动创建（请停止分析后重新导入）：</span><br>");
+					} else {
+						message.append("<br><span class='warn'>⚠ 以下备份会话无法恢复，其数据已跳过：</span><br>");
+					}
 					for (int i = 0; i < result.unknownSessions.size() && i < 10; i++) {
 						message.append("· ").append(escapeHtml(result.unknownSessions.get(i))).append("<br>");
 					}
-					if (result.unknownSessions.size() > 10) {
-						message.append("· ... 共 ").append(result.unknownSessions.size()).append(" 个<br>");
-					}
+				if (result.unknownSessions.size() > 10) {
+					message.append("· ... 共 ").append(result.unknownSessions.size()).append(" 个<br>");
 				}
-				message.append("</html>");
-				JOptionPane.showMessageDialog(this, message.toString(), "导入看板备份",
-						JOptionPane.INFORMATION_MESSAGE);
-			});
-		}).exceptionally(throwable -> {
+			}
+			showHtmlDialog("导入看板备份", message.toString(), false);
+		});
+		} catch (Exception e) {
 			SwingUtilities.invokeLater(() -> {
 				button.setIcon(null);
 				button.setEnabled(true);
-				JOptionPane.showMessageDialog(this, "导入看板备份异常: " + throwable.getMessage(), "导入看板备份",
+				JOptionPane.showMessageDialog(this, "导入看板备份异常: " + e.getMessage(), "导入看板备份",
 						JOptionPane.ERROR_MESSAGE);
 			});
-			return null;
-		});
+		}
 	}
 
 	// 导入覆盖恢复后, 将过滤条件重置为"显示全部":

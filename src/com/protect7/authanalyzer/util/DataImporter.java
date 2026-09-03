@@ -16,6 +16,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import com.protect7.authanalyzer.entities.AnalyzerRequestResponse;
@@ -38,10 +41,22 @@ import burp.api.montoya.http.message.responses.HttpResponse;
  *   <li>先完整解析并校验备份文件，任何解析错误都会中止（不清空现有数据）；</li>
  *   <li>解析通过后清空当前看板（Session 请求缓存 + 表格行），再按备份重建；</li>
  *   <li>ID 重新从当前计数器分配，避免与后续实时流量冲突；</li>
+ *   <li>v2 备份含 sessionConfigs（会话完整配置），调用方可据此在当前配置中
+ *       自动重建缺失的同名会话（含头替换/Token/匹配替换规则），避免会话数据被跳过；</li>
  *   <li>备份中会话名在当前配置中不存在时，该会话对应的数据被跳过并记录警告。</li>
  * </ul>
+ *
+ * 两阶段用法（v2 导入流程，见 CenterPanel.importBoardBackup）：
+ * <ol>
+ *   <li>{@link #prepare(File)}：解析并校验备份，得到行数据 + 备份会话名 + 会话配置；</li>
+ *   <li>调用方在 EDT 上恢复缺失会话（SessionRestorer / ConfigurationPanel），并重建表格模型；</li>
+ *   <li>{@link #restoreRows(ParsedSnapshot, CurrentConfig, RequestTableModel)}：清空看板并灌入数据。</li>
+ * </ol>
  */
 public class DataImporter {
+
+	/** 兼容的备份版本：v1（仅数据）、v2（数据 + 会话配置） */
+	private static final int SUPPORTED_VERSION_MIN = 1;
 
 	private DataImporter() {
 	}
@@ -55,6 +70,16 @@ public class DataImporter {
 		public int skippedSessionEntries = 0;
 		public List<String> unknownSessions = new ArrayList<String>();
 		public String error = null;
+	}
+
+	/** 解析后的备份快照（prepare 产出，restoreRows 消费） */
+	public static class ParsedSnapshot {
+		public final List<ParsedRow> rows = new ArrayList<ParsedRow>();
+		/** 备份中出现过的会话名（有数据条目的），按出现顺序 */
+		public final LinkedHashSet<String> backupSessionNames = new LinkedHashSet<String>();
+		/** v2 备份的会话完整配置（与 DataStorageProvider setup JSON 的 sessions 数组同构）；v1 为 null */
+		public JsonArray sessionConfigs;
+		public int version;
 	}
 
 	/** 备份中单条 Session 结果 */
@@ -86,17 +111,39 @@ public class DataImporter {
 		List<ParsedSessionData> sessionData = new ArrayList<ParsedSessionData>();
 	}
 
-	public static ImportResult restore(File file, CurrentConfig config, RequestTableModel tableModel) {
+	/**
+	 * 阶段一：解析并校验备份文件。失败抛 IOException，调用方直接提示。
+	 * 不触碰当前看板数据。
+	 */
+	public static ParsedSnapshot prepare(File file) throws IOException {
+		ParsedSnapshot snapshot = new ParsedSnapshot();
+		parse(file, snapshot);
+		Collections.sort(snapshot.rows, new Comparator<ParsedRow>() {
+			@Override
+			public int compare(ParsedRow left, ParsedRow right) {
+				return Integer.compare(left.id, right.id);
+			}
+		});
+		for (ParsedRow row : snapshot.rows) {
+			for (ParsedSessionData sessionData : row.sessionData) {
+				if (sessionData.sessionName != null) {
+					snapshot.backupSessionNames.add(sessionData.sessionName);
+				}
+			}
+		}
+		return snapshot;
+	}
+
+	/**
+	 * 阶段二：清空当前看板并把备份行数据恢复到指定表格模型。
+	 * 调用方需保证：备份中期望恢复的会话在 config 中已存在（必要时先经会话恢复），
+	 * 且传入的 tableModel 即为最终展示的模型（其列结构含全部会话列）。
+	 */
+	public static ImportResult restoreRows(ParsedSnapshot snapshot, CurrentConfig config,
+			RequestTableModel tableModel) {
 		ImportResult result = new ImportResult();
 		try {
-			List<ParsedRow> rows = parse(file);
-			Collections.sort(rows, new Comparator<ParsedRow>() {
-				@Override
-				public int compare(ParsedRow left, ParsedRow right) {
-					return Integer.compare(left.id, right.id);
-				}
-			});
-			result.totalRows = rows.size();
+			result.totalRows = snapshot.rows.size();
 
 			// 按名字建立当前 Session 索引，并收集缺失会话
 			Map<String, Session> sessionsByName = new LinkedHashMap<String, Session>();
@@ -104,7 +151,7 @@ public class DataImporter {
 				sessionsByName.put(session.getName(), session);
 			}
 			LinkedHashSet<String> unknownSet = new LinkedHashSet<String>();
-			for (ParsedRow row : rows) {
+			for (ParsedRow row : snapshot.rows) {
 				for (ParsedSessionData sessionData : row.sessionData) {
 					if (sessionData.sessionName == null
 							|| sessionsByName.get(sessionData.sessionName) == null) {
@@ -120,8 +167,8 @@ public class DataImporter {
 
 			// 批量重建：先构造全部 OriginalRequestResponse(并为每行写入各 Session 结果)，
 			// 再一次交给表格批量建立索引并触发一次刷新，避免逐行走实时去重/EDT 事件管线。
-			ArrayList<OriginalRequestResponse> rebuiltRows = new ArrayList<OriginalRequestResponse>(rows.size());
-			for (ParsedRow row : rows) {
+			ArrayList<OriginalRequestResponse> rebuiltRows = new ArrayList<OriginalRequestResponse>(snapshot.rows.size());
+			for (ParsedRow row : snapshot.rows) {
 				try {
 					OriginalRequestResponse originalRequestResponse = buildRow(row, sessionsByName, config, result);
 					if (originalRequestResponse != null) {
@@ -141,6 +188,21 @@ public class DataImporter {
 			MontoyaUtils.logError("Board snapshot restore failed. " + result.error);
 		}
 		return result;
+	}
+
+	/**
+	 * 一步式恢复（不自动重建缺失会话）。保留给简单场景使用；
+	 * CenterPanel 的导入流程走 prepare/restoreRows 两阶段以支持会话自动恢复。
+	 */
+	public static ImportResult restore(File file, CurrentConfig config, RequestTableModel tableModel) {
+		try {
+			return restoreRows(prepare(file), config, tableModel);
+		} catch (IOException e) {
+			ImportResult result = new ImportResult();
+			result.error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+			MontoyaUtils.logError("Board snapshot restore failed. " + result.error);
+			return result;
+		}
 	}
 
 	/**
@@ -207,8 +269,7 @@ public class DataImporter {
 		return originalRequestResponse;
 	}
 
-	private static List<ParsedRow> parse(File file) throws IOException {
-		List<ParsedRow> rows = new ArrayList<ParsedRow>();
+	private static void parse(File file, ParsedSnapshot snapshot) throws IOException {
 		JsonReader reader = new JsonReader(
 				new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
 		try {
@@ -225,10 +286,12 @@ public class DataImporter {
 					reader.skipValue();
 				} else if ("sessionNames".equals(name)) {
 					reader.skipValue();
+				} else if ("sessionConfigs".equals(name)) {
+					snapshot.sessionConfigs = parseSessionConfigs(reader);
 				} else if ("rows".equals(name)) {
 					reader.beginArray();
 					while (reader.hasNext()) {
-						rows.add(parseRow(reader));
+						snapshot.rows.add(parseRow(reader));
 					}
 					reader.endArray();
 				} else {
@@ -239,13 +302,20 @@ public class DataImporter {
 			if (!DataExporter.SNAPSHOT_FORMAT.equals(format)) {
 				throw new IOException("文件不是有效的看板备份（format 不匹配）");
 			}
-			if (version != DataExporter.SNAPSHOT_VERSION) {
-				throw new IOException("不支持的备份版本: " + version + "（当前支持 " + DataExporter.SNAPSHOT_VERSION + "）");
+			if (version < SUPPORTED_VERSION_MIN || version > DataExporter.SNAPSHOT_VERSION) {
+				throw new IOException("不支持的备份版本: " + version + "（当前支持 "
+						+ SUPPORTED_VERSION_MIN + "~" + DataExporter.SNAPSHOT_VERSION + "）");
 			}
+			snapshot.version = version;
 		} finally {
 			reader.close();
 		}
-		return rows;
+	}
+
+	/** 读取顶层 sessionConfigs 数组为原始 JsonArray（供会话恢复按名取配置） */
+	private static JsonArray parseSessionConfigs(JsonReader reader) throws IOException {
+		// JsonReader 与 JsonParser 混用需整体读取：先以 JsonParser 从 reader 解流
+		return JsonParser.parseReader(reader).getAsJsonArray();
 	}
 
 	private static ParsedRow parseRow(JsonReader reader) throws IOException {

@@ -14,7 +14,8 @@
 
 2、问题修复
 - 修复导入备份后看板“0/N 可见”问题：过滤层加两层兜底（四状态白名单全不勾→放行全部；行内无任何状态值→跟随 NA 显示）+ 导入后自动重置过滤（清搜索词/取消只看标记与去重/四状态白名单全勾），避免残留过滤条件把恢复数据滤成不可见
-- 涉及代码：`CustomRowSorter.java`（include 兜底）、`CenterPanel.java`（`resetBoardFilterAfterImport`）
+- 修复导入备份跨环境丢失会话数据：重启 Burp/换工程后当前配置未物化同名会话时，旧导入会把全部会话结果“跳过（会话未匹配）”且看板无会话列。现备份快照升为 v2（顶层新增 sessionConfigs，携带每个会话的完整配置：头替换/移除、作用域、Token、匹配替换），导入时自动按快照配置补建缺失的同名会话并重建看板会话列，数据完整恢复；v1 旧备份兼容（缺失会话建默认空配置会话，数据不丢）
+- 涉及代码：`CustomRowSorter.java`（include 兜底）、`CenterPanel.java`（`resetBoardFilterAfterImport` + 导入两阶段流程）、`DataExporter.java`（sessionConfigs）、`DataImporter.java`（prepare/restoreRows 两阶段）、`ConfigurationPanel.java`（`restoreSessionsFromSnapshot`）
 
 3、性能优化
 - 备份导入/导出大接口量（300+/500+/1000+ 条）提速：

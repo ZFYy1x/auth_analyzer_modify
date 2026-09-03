@@ -671,6 +671,145 @@ public class ConfigurationPanel extends JPanel {
 		}
 	}
 
+	/**
+	 * 用 setup/快照 JSON 中的单个会话配置初始化 SessionPanel
+	 * （头替换/移除、作用域、CORS、匹配替换、Token）。
+	 * loadSetup（扩展启动恢复）与 restoreSessionsFromSnapshot（看板备份导入恢复）共用。
+	 */
+	private void applySessionConfigToPanel(SessionPanel sessionPanel, JsonObject sessionObject) {
+		if (sessionObject.get("headersToReplace") != null) {
+			sessionPanel.setHeadersToReplaceText(sessionObject.get("headersToReplace").getAsString());
+		}
+		if (sessionObject.get("filterRequestsWithSameHeader") != null) {
+			sessionPanel.setFilterRequestsWithSameHeader(
+					sessionObject.get("filterRequestsWithSameHeader").getAsBoolean());
+		}
+		if(sessionObject.get("removeHeaders") != null) {
+			sessionPanel.setRemoveHeaders(sessionObject.get("removeHeaders").getAsBoolean());
+		}
+		if(sessionObject.get("headersToRemove") != null) {
+			sessionPanel.setHeadersToRemoveText(sessionObject.get("headersToRemove").getAsString());
+		}
+		if (sessionObject.get("restrictToScope") != null) {
+			sessionPanel.setRestrictToScope(sessionObject.get("restrictToScope").getAsBoolean());
+		}
+		if (sessionObject.get("scopeUrl") != null) {
+			sessionPanel.setRestrictToScopeText(sessionObject.get("scopeUrl").getAsString());
+		}
+		if (sessionObject.get("testCors") != null) {
+			sessionPanel.setTestCors(sessionObject.get("testCors").getAsBoolean());
+		}
+		if(sessionObject.get("matchAndReplaceList") != null) {
+			JsonArray matchAndReplaceArray = sessionObject.get("matchAndReplaceList").getAsJsonArray();
+			ArrayList<MatchAndReplace> matchAndReplaceList = new ArrayList<MatchAndReplace>();
+			for (JsonElement matchAndReplaceElement : matchAndReplaceArray) {
+				JsonObject matchAndReplaceObject = matchAndReplaceElement.getAsJsonObject();
+				if(matchAndReplaceObject.get("match") != null && matchAndReplaceObject.get("replace") != null) {
+					matchAndReplaceList.add(new MatchAndReplace(matchAndReplaceObject.get("match").getAsString(),
+							matchAndReplaceObject.get("replace").getAsString()));
+				}
+			}
+			sessionPanel.setMatchAndReplaceList(matchAndReplaceList);
+		}
+		JsonArray tokenArray = sessionObject.get("tokens").getAsJsonArray();
+		for (JsonElement tokenElement : tokenArray) {
+			JsonObject tokenObject = tokenElement.getAsJsonObject();
+			// create new token panel for each token
+			TokenPanel tokenPanel = sessionPanel.addToken(tokenObject.get("name").getAsString());
+			if(tokenObject.get("tokenLocationSet") != null) {
+				Type type = new TypeToken<EnumSet<TokenLocation>>(){}.getType();
+				EnumSet<TokenLocation> tokenLocationSet =  new Gson().fromJson(tokenObject.get("tokenLocationSet"), type);
+				tokenPanel.setTokenLocationSet(tokenLocationSet);
+			}
+			if(tokenObject.get("autoExtractLocationSet") != null) {
+				Type type = new TypeToken<EnumSet<AutoExtractLocation>>(){}.getType();
+				EnumSet<AutoExtractLocation> autoExtractLocationSet =  new Gson().fromJson(tokenObject.get("autoExtractLocationSet"), type);
+				tokenPanel.setAutoExtractLocationSet(autoExtractLocationSet);
+			}
+			if(tokenObject.get("fromToExtractLocationSet") != null) {
+				Type type = new TypeToken<EnumSet<FromToExtractLocation>>(){}.getType();
+				EnumSet<FromToExtractLocation> fromToExtractLocationSet =  new Gson().fromJson(tokenObject.get("fromToExtractLocationSet"), type);
+				tokenPanel.setFromToExtractLocationSet(fromToExtractLocationSet);
+			}
+			if(tokenObject.get("addIfNotExists") != null) {
+				tokenPanel.setAddTokenIfNotExists(tokenObject.get("addIfNotExists").getAsBoolean());
+			}
+			if(tokenObject.get("urlEncoded") != null) {
+				tokenPanel.setUrlEncoded(tokenObject.get("urlEncoded").getAsBoolean());
+			}
+			if(tokenObject.get("caseSensitiveTokenName") != null) {
+				tokenPanel.setCaseSensitiveTokenName(tokenObject.get("caseSensitiveTokenName").getAsBoolean());
+			}
+			tokenPanel.setIsRemoveToken(tokenObject.get("remove").getAsBoolean());
+			tokenPanel.setTokenValueComboBox(tokenObject.get("autoExtract").getAsBoolean(),
+					tokenObject.get("staticValue").getAsBoolean(), tokenObject.get("fromToString").getAsBoolean(),
+					tokenObject.get("promptForInput").getAsBoolean());
+			if (tokenObject.get("extractName") != null) {
+				tokenPanel.setGenericTextFieldText(tokenObject.get("extractName").getAsString());
+			} else if (tokenObject.get("grepFromString") != null && tokenObject.get("grepToString") != null) {
+				tokenPanel.setGenericTextFieldText("from [" + tokenObject.get("grepFromString").getAsString()
+						+ "] to [" + tokenObject.get("grepToString").getAsString() + "]");
+			} else if (tokenObject.get("value") != null) {
+				tokenPanel.setGenericTextFieldText(tokenObject.get("value").getAsString());
+			}
+		}
+	}
+
+	/**
+	 * 从看板备份快照(v2)的 sessionConfigs 中恢复缺失的会话面板（含完整配置）。
+	 * 仅创建/补齐 SessionPanel（配置层）；Session 对象随后由 createSessionObjects(false) 统一物化。
+	 * 必须在 EDT 调用。绕过 doModify 确认——导入流程已单独向用户确认覆盖看板。
+	 *
+	 * @param sessionConfigs 快照顶层 sessionConfigs 数组（v1 备份为 null，此时创建默认空配置会话）
+	 * @param missingSessionNames 需要恢复的会话名（面板已存在的不动，保留用户当前配置）
+	 * @return 实际创建成功的会话名
+	 */
+	public ArrayList<String> restoreSessionsFromSnapshot(JsonArray sessionConfigs, java.util.List<String> missingSessionNames) {
+		ArrayList<String> restored = new ArrayList<String>();
+		for (String sessionName : missingSessionNames) {
+			if (sessionName == null || sessionName.isEmpty() || sessionPanelMap.containsKey(sessionName)) {
+				continue;
+			}
+			try {
+				SessionPanel sessionPanel = new SessionPanel(sessionName, mainPanel);
+				JsonObject sessionObject = findSessionConfig(sessionConfigs, sessionName);
+				if (sessionObject != null) {
+					applySessionConfigToPanel(sessionPanel, sessionObject);
+				}
+				sessionTabbedPane.add(sessionName, sessionPanel);
+				sessionPanelMap.put(sessionName, sessionPanel);
+				sessionListChanged = true;
+				restored.add(sessionName);
+			} catch (Exception e) {
+				BurpExtender.api.logging().logToError(
+						"从备份恢复会话 '" + sessionName + "' 失败: " + e.getMessage());
+			}
+		}
+		return restored;
+	}
+
+	private JsonObject findSessionConfig(JsonArray sessionConfigs, String sessionName) {
+		if (sessionConfigs == null) {
+			return null;
+		}
+		for (JsonElement element : sessionConfigs) {
+			try {
+				JsonObject sessionObject = element.getAsJsonObject();
+				if (sessionObject.get("name") != null
+						&& sessionName.equals(sessionObject.get("name").getAsString())) {
+					return sessionObject;
+				}
+			} catch (Exception ignore) {
+			}
+		}
+		return null;
+	}
+
+	/** 会话面板/对象与配置层同步完成后调用，避免下次启动分析触发不必要的表格重建（清空恢复数据） */
+	public void markSessionListSynced() {
+		sessionListChanged = false;
+	}
+
 	private void loadSetup(String jsonString) {
 		sessionPanelMap.clear();
 		sessionTabbedPane.removeAll();
@@ -681,78 +820,7 @@ public class ConfigurationPanel extends JPanel {
 			JsonObject sessionObject = sessionEl.getAsJsonObject();
 			String sessionName = sessionObject.get("name").getAsString();
 			SessionPanel sessionPanel = new SessionPanel(sessionName, mainPanel);
-			sessionPanel.setHeadersToReplaceText(sessionObject.get("headersToReplace").getAsString());
-			sessionPanel
-					.setFilterRequestsWithSameHeader(sessionObject.get("filterRequestsWithSameHeader").getAsBoolean());
-			if(sessionObject.get("removeHeaders") != null) {
-				sessionPanel.setRemoveHeaders(sessionObject.get("removeHeaders").getAsBoolean());
-			}
-			if(sessionObject.get("headersToRemove") != null) {
-				sessionPanel.setHeadersToRemoveText(sessionObject.get("headersToRemove").getAsString());
-			}
-			if (sessionObject.get("restrictToScope") != null) {
-				sessionPanel.setRestrictToScope(sessionObject.get("restrictToScope").getAsBoolean());
-			}
-			if (sessionObject.get("scopeUrl") != null) {
-				sessionPanel.setRestrictToScopeText(sessionObject.get("scopeUrl").getAsString());
-			}
-			if (sessionObject.get("testCors") != null) {
-				sessionPanel.setTestCors(sessionObject.get("testCors").getAsBoolean());
-			}
-			if(sessionObject.get("matchAndReplaceList") != null) {
-				JsonArray matchAndReplaceArray = sessionObject.get("matchAndReplaceList").getAsJsonArray();
-				ArrayList<MatchAndReplace> matchAndReplaceList = new ArrayList<MatchAndReplace>();
-				for (JsonElement matchAndReplaceElement : matchAndReplaceArray) {
-					JsonObject matchAndReplaceObject = matchAndReplaceElement.getAsJsonObject();
-					if(matchAndReplaceObject.get("match") != null && matchAndReplaceObject.get("replace") != null) {
-						matchAndReplaceList.add(new MatchAndReplace(matchAndReplaceObject.get("match").getAsString(), 
-								matchAndReplaceObject.get("replace").getAsString()));
-					}
-				}
-				sessionPanel.setMatchAndReplaceList(matchAndReplaceList);
-			}
-			JsonArray tokenArray = sessionObject.get("tokens").getAsJsonArray();
-			for (JsonElement tokenElement : tokenArray) {
-				JsonObject tokenObject = tokenElement.getAsJsonObject();
-				// create new token panel for each token
-				TokenPanel tokenPanel = sessionPanel.addToken(tokenObject.get("name").getAsString());
-				if(tokenObject.get("tokenLocationSet") != null) {
-					Type type = new TypeToken<EnumSet<TokenLocation>>(){}.getType();
-					EnumSet<TokenLocation> tokenLocationSet =  new Gson().fromJson(tokenObject.get("tokenLocationSet"), type);
-					tokenPanel.setTokenLocationSet(tokenLocationSet);
-				}
-				if(tokenObject.get("autoExtractLocationSet") != null) {
-					Type type = new TypeToken<EnumSet<AutoExtractLocation>>(){}.getType();
-					EnumSet<AutoExtractLocation> autoExtractLocationSet =  new Gson().fromJson(tokenObject.get("autoExtractLocationSet"), type);
-					tokenPanel.setAutoExtractLocationSet(autoExtractLocationSet);
-				}
-				if(tokenObject.get("fromToExtractLocationSet") != null) {
-					Type type = new TypeToken<EnumSet<FromToExtractLocation>>(){}.getType();
-					EnumSet<FromToExtractLocation> fromToExtractLocationSet =  new Gson().fromJson(tokenObject.get("fromToExtractLocationSet"), type);
-					tokenPanel.setFromToExtractLocationSet(fromToExtractLocationSet);
-				}
-				if(tokenObject.get("addIfNotExists") != null) {
-					tokenPanel.setAddTokenIfNotExists(tokenObject.get("addIfNotExists").getAsBoolean());
-				}
-				if(tokenObject.get("urlEncoded") != null) {
-					tokenPanel.setUrlEncoded(tokenObject.get("urlEncoded").getAsBoolean());
-				}
-				if(tokenObject.get("caseSensitiveTokenName") != null) {
-					tokenPanel.setCaseSensitiveTokenName(tokenObject.get("caseSensitiveTokenName").getAsBoolean());
-				}
-				tokenPanel.setIsRemoveToken(tokenObject.get("remove").getAsBoolean());
-				tokenPanel.setTokenValueComboBox(tokenObject.get("autoExtract").getAsBoolean(),
-						tokenObject.get("staticValue").getAsBoolean(), tokenObject.get("fromToString").getAsBoolean(),
-						tokenObject.get("promptForInput").getAsBoolean());
-				if (tokenObject.get("extractName") != null) {
-					tokenPanel.setGenericTextFieldText(tokenObject.get("extractName").getAsString());
-				} else if (tokenObject.get("grepFromString") != null && tokenObject.get("grepToString") != null) {
-					tokenPanel.setGenericTextFieldText("from [" + tokenObject.get("grepFromString").getAsString()
-							+ "] to [" + tokenObject.get("grepToString").getAsString() + "]");
-				} else if (tokenObject.get("value") != null) {
-					tokenPanel.setGenericTextFieldText(tokenObject.get("value").getAsString());
-				}
-			}
+			applySessionConfigToPanel(sessionPanel, sessionObject);
 			sessionTabbedPane.add(sessionPanel.getSessionName(), sessionPanel);
 			sessionPanelMap.put(sessionPanel.getSessionName(), sessionPanel);
 			sessionTabbedPane.setModifEnabled(true);
