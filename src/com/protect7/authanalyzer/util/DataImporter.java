@@ -118,14 +118,23 @@ public class DataImporter {
 			config.clearSessionRequestMaps();
 			tableModel.clearRequestMap();
 
+			// 批量重建：先构造全部 OriginalRequestResponse(并为每行写入各 Session 结果)，
+			// 再一次交给表格批量建立索引并触发一次刷新，避免逐行走实时去重/EDT 事件管线。
+			ArrayList<OriginalRequestResponse> rebuiltRows = new ArrayList<OriginalRequestResponse>(rows.size());
 			for (ParsedRow row : rows) {
 				try {
-					restoreRow(row, sessionsByName, config, result);
+					OriginalRequestResponse originalRequestResponse = buildRow(row, sessionsByName, config, result);
+					if (originalRequestResponse != null) {
+						rebuiltRows.add(originalRequestResponse);
+					}
 				} catch (Exception rowException) {
 					result.skippedInvalidRows++;
 					MontoyaUtils.logError("Skipped row (id " + row.id + ") during snapshot restore. "
 							+ rowException.getMessage());
 				}
+			}
+			if (!rebuiltRows.isEmpty()) {
+				tableModel.bulkRebuildForRestore(rebuiltRows);
 			}
 		} catch (Exception e) {
 			result.error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
@@ -134,11 +143,16 @@ public class DataImporter {
 		return result;
 	}
 
-	private static void restoreRow(ParsedRow row, Map<String, Session> sessionsByName, CurrentConfig config,
-			ImportResult result) {
+	/**
+	 * 由备份中的一行构造看板行，并把该行的各 Session 结果写入对应 Session。
+	 *
+	 * @return 构造成功的 OriginalRequestResponse；该行无效(缺报文/无法重建)时返回 null。
+	 */
+	private static OriginalRequestResponse buildRow(ParsedRow row, Map<String, Session> sessionsByName,
+			CurrentConfig config, ImportResult result) {
 		if (row.requestBytes == null || row.requestBytes.length == 0 || row.host == null || row.host.isEmpty()) {
 			result.skippedInvalidRows++;
-			return;
+			return null;
 		}
 		int effectivePort = row.port;
 		if (effectivePort <= 0) {
@@ -148,7 +162,7 @@ public class DataImporter {
 		HttpRequest request = MontoyaUtils.requestFromBytes(service, row.requestBytes);
 		if (request == null) {
 			result.skippedInvalidRows++;
-			return;
+			return null;
 		}
 		HttpResponse response = MontoyaUtils.responseFromBytes(row.responseBytes);
 		HttpExchange exchange = new HttpExchange(request, response);
@@ -161,7 +175,6 @@ public class DataImporter {
 			originalRequestResponse.setComment(row.comment);
 		}
 		originalRequestResponse.setMarked(row.marked);
-		config.getTableModel().addNewRequestResponse(originalRequestResponse);
 		result.restoredRows++;
 
 		for (ParsedSessionData sessionData : row.sessionData) {
@@ -191,6 +204,7 @@ public class DataImporter {
 			session.putRequestResponse(newId, analyzerRequestResponse);
 			result.matchedSessionEntries++;
 		}
+		return originalRequestResponse;
 	}
 
 	private static List<ParsedRow> parse(File file) throws IOException {

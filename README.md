@@ -6,6 +6,27 @@
 
 ## 版本更新
 
+### V1.9版本修改
+
+1、功能/交互增强
+- 「清除表格」增加二次确认：看板有数据时点击会弹确认框，点“取消”不清除，防误触清空所有会话结果（空表不弹窗）
+- 内部程序化清表路径（改会话设置时）已自带“数据将丢失”提示，不重复弹窗
+
+2、问题修复
+- 修复导入备份后看板“0/N 可见”问题：过滤层加两层兜底（四状态白名单全不勾→放行全部；行内无任何状态值→跟随 NA 显示）+ 导入后自动重置过滤（清搜索词/取消只看标记与去重/四状态白名单全勾），避免残留过滤条件把恢复数据滤成不可见
+- 涉及代码：`CustomRowSorter.java`（include 兜底）、`CenterPanel.java`（`resetBoardFilterAfterImport`）
+
+3、性能优化
+- 备份导入/导出大接口量（300+/500+/1000+ 条）提速：
+  - `HttpExchange` 请求/响应字节加惰性缓存，消除导出时反复 `toByteArray()` 全量序列化
+  - 导出去掉 pretty-print 缩进，输出紧凑 JSON（结构不变，旧备份仍兼容）
+  - 导入改为批量重建（`buildRow` + `bulkRebuildForRestore`），绕过逐行实时去重与 EDT 事件，一次刷新
+- 涉及代码：`HttpExchange.java`、`DataExporter.java`、`DataImporter.java`、`RequestTableModel.java`
+
+4、版本与构建
+- 迭代版本号 1.8 → 1.9（pom.xml、BappManifest.bmf、打包产物同步更新）
+- 打包产物：`target/auth_analyzer_modify-1.9.jar`、`target/auth_analyzer_modify-1.9-jar-with-dependencies.jar`（Burp 加载用）
+
 ### V1.8版本修改
 
 1、功能增强
@@ -345,4 +366,5 @@ For instance, we don’t want to process a static JavaScript file because it is 
 * Search function in repeated requests
 * Wildcard `{%}` support in table search (matches any chars, e.g. `/api/reports/authorized/{%}/html`)
 * Board backup snapshot export / import (JSON, full restore incl. request/response messages, for re-testing and audit traceback)
+* Board snapshot import/export optimized for large traffic sets (300+/500+/1000+); "Clear table" guarded by a confirmation dialog
 * Semi Automated Authoriztaion Testing

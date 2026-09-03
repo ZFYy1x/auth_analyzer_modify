@@ -6,6 +6,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Timer;
@@ -477,7 +478,74 @@ public class RequestTableModel extends AbstractTableModel {
 		duplicateSignatureIdIndex.clear();
 		fireTableDataChanged();
 	}
-	
+
+	/**
+	 * 批量重建（用于从备份恢复看板数据）。
+	 *
+	 * 与逐行 addNewRequestResponse（面向实时抓流、含逐行自动去重注释扫描与批量 EDT 事件）
+	 * 不同，本方法一次性接收整表数据并建立全部内部索引，仅触发一次表格刷新，
+	 * 从而在 300+/500+/1000+ 大接口量下显著降低导入耗时的 CPU 与 EDT 开销。
+	 *
+	 * 调用方约束：
+	 * <ul>
+	 *   <li>调用前先通过 clearRequestMap() 清空现有看板（本方法不重复清空）；</li>
+	 *   <li>传入的行必须已分配新 ID 且按 ID 升序排列（与实时增量语义保持一致，
+	 *       使每条签名首个可见行为代表、其余标为重复）；</li>
+	 *   <li>行内各 Session 的 AnalyzerRequestResponse 已由调用方写入对应 Session。
+	 * </ul>
+	 */
+	public synchronized void bulkRebuildForRestore(List<OriginalRequestResponse> rows) {
+		if (rows == null) {
+			return;
+		}
+		cancelBatchUpdateTimer();
+		pendingUpdates.clear();
+		for (OriginalRequestResponse requestResponse : rows) {
+			if (requestResponse == null) {
+				continue;
+			}
+			int rowIndex = originalRequestResponseList.size();
+			originalRequestResponseList.add(requestResponse);
+			requestResponseById.put(requestResponse.getId(), requestResponse);
+			rowIndexById.put(requestResponse.getId(), rowIndex);
+			String pathOnly = "";
+			try {
+				pathOnly = extractPathOnly(requestResponse.getUrl());
+			}
+			catch (Exception ignore) {
+			}
+			getRowsForPath(pathOnly).put(requestResponse.getId(), requestResponse);
+		}
+		// 建完行后统一计算签名与重复代表，避免逐行操作时路径自动注释扫描的高昂成本
+		for (OriginalRequestResponse requestResponse : rows) {
+			if (requestResponse == null) {
+				continue;
+			}
+			try {
+				indexDuplicateSignature(requestResponse);
+			}
+			catch (Exception ignore) {
+			}
+		}
+		// 更新每行自动重复注释（"重复ID:x"），使其与实时增量产生的显示一致
+		for (OriginalRequestResponse requestResponse : rows) {
+			if (requestResponse == null) {
+				continue;
+			}
+			try {
+				String pathOnly = extractPathOnly(requestResponse.getUrl());
+				Integer representativeId = findPreviousVisibleRepresentativeIdForPath(pathOnly, requestResponse.getId());
+				if (representativeId == null && canRepresentPath(requestResponse)) {
+					representativeId = requestResponse.getId();
+				}
+				updateAutoDuplicateComment(requestResponse, representativeId);
+			}
+			catch (Exception ignore) {
+			}
+		}
+		fireTableDataChanged();
+	}
+
 	public OriginalRequestResponse getOriginalRequestResponse(int listIndex) {
 		if(listIndex < originalRequestResponseList.size()) {
 			return originalRequestResponseList.get(listIndex);

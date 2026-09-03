@@ -440,6 +440,20 @@ public class CenterPanel extends JPanel {
 	}
 
 	public void clearTablePressed() {
+		// 二次确认，防止误点清空看板数据（破坏性操作，无法撤销）
+		try {
+			int totalRows = (tableModel != null) ? tableModel.getRowCount() : 0;
+			if (totalRows > 0) {
+				int confirm = JOptionPane.showConfirmDialog(this,
+						"确定要清除当前看板全部 " + totalRows + " 条数据吗？\n此操作会清空所有会话的检测结果且无法撤销，请先导出备份。",
+						"确认清除表格", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+				if (confirm != JOptionPane.OK_OPTION) {
+					return; // 用户取消，不清除
+				}
+			}
+		} catch (Exception ignore) {
+			// 弹窗异常时仍允许继续清除（不因对话框问题阻塞原有清除逻辑）
+		}
 		clearTableButton.setIcon(loaderImageIcon);
 		clearTableButton.setEnabled(false);
 		
@@ -767,6 +781,7 @@ public class CenterPanel extends JPanel {
 							JOptionPane.ERROR_MESSAGE);
 					return;
 				}
+				resetBoardFilterAfterImport();
 				refreshTableAfterDataChange();
 				StringBuilder message = new StringBuilder("<html>看板已从备份恢复：<br>");
 				message.append("· 恢复行数: ").append(result.restoredRows).append(" / ").append(result.totalRows).append("<br>");
@@ -797,6 +812,33 @@ public class CenterPanel extends JPanel {
 			});
 			return null;
 		});
+	}
+
+	// 导入覆盖恢复后, 将过滤条件重置为"显示全部":
+	// 清空搜索词、取消"只看标记/去重", 并恢复四个状态白名单为全勾,
+	// 避免残留的过滤条件把刚恢复的数据滤成不可见(0/N 可见)
+	private void resetBoardFilterAfterImport() {
+		try {
+			filterText.setText("");
+			if(showOnlyMarked.isSelected()) {
+				showOnlyMarked.setSelected(false);
+			}
+			if(showDuplicates.isSelected()) {
+				showDuplicates.setSelected(false);
+			}
+			if(!showBypassed.isSelected()) {
+				showBypassed.setSelected(true);
+			}
+			if(!showPotentialBypassed.isSelected()) {
+				showPotentialBypassed.setSelected(true);
+			}
+			if(!showNotBypassed.isSelected()) {
+				showNotBypassed.setSelected(true);
+			}
+			if(!showNA.isSelected()) {
+				showNA.setSelected(true);
+			}
+		} catch (Exception ignore) {}
 	}
 
 	// 导入完成后重建搜索索引并刷新表格（含过滤/排序结果）

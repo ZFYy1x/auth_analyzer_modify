@@ -9,6 +9,10 @@ public class HttpExchange {
 
 	private final HttpRequest request;
 	private final HttpResponse response;
+	// 惰性字节缓存：montoya 的 HttpRequest/HttpResponse 不可变，
+	// 因此 toByteArray() 的结果可安全缓存，避免大流量下反复全量序列化。
+	private volatile byte[] cachedRequestBytes;
+	private volatile byte[] cachedResponseBytes;
 
 	public HttpExchange(HttpRequest request, HttpResponse response) {
 		this.request = request;
@@ -51,13 +55,23 @@ public class HttpExchange {
 		if (request == null) {
 			return null;
 		}
-		return request.toByteArray().getBytes();
+		byte[] cached = cachedRequestBytes;
+		if (cached == null) {
+			cached = request.toByteArray().getBytes();
+			cachedRequestBytes = cached;
+		}
+		return cached;
 	}
 
 	public byte[] getResponseBytes() {
 		if (response == null) {
 			return null;
 		}
-		return response.toByteArray().getBytes();
+		byte[] cached = cachedResponseBytes;
+		if (cached == null) {
+			cached = response.toByteArray().getBytes();
+			cachedResponseBytes = cached;
+		}
+		return cached;
 	}
 }

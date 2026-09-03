@@ -131,6 +131,24 @@ public class CustomRowSorter extends TableRowSorter<RequestTableModel> {
 						}
 					}
 				}
+				// 兜底 1: 状态白名单一个都未勾选 = 不做状态过滤(放行全部), 避免"全不勾反而全滤"死锁
+				if(!showBypassed.isSelected() && !showPotentialBypassed.isSelected()
+						&& !showNotBypassed.isSelected() && !showNA.isSelected()) {
+					return true;
+				}
+				// 兜底 2: 行内无任何 session 状态判定(如导入的备份中会话名未匹配当前配置)
+				//         视为"无数据"状态, 跟随 NA 白名单显示, 避免恢复的数据被过滤成不可见
+				if(showNA.isSelected()) {
+					boolean hasStatusValue = false;
+					for(int i = entry.getValueCount()-1; i>4 && !hasStatusValue; i--) {
+						if(entry.getValue(i) instanceof BypassConstants) {
+							hasStatusValue = true;
+						}
+					}
+					if(!hasStatusValue) {
+						return true;
+					}
+				}
 				return false;
 			}
 		};

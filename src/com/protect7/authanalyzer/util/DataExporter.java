@@ -194,7 +194,8 @@ public class DataExporter {
 			ArrayList<Session> sessions) {
 		try (JsonWriter writer = new JsonWriter(
 				new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-			writer.setIndent("  ");
+			// 紧凑输出(不缩进)：快照用于机器回读而非人工阅读，
+			// 紧凑 JSON 体积与写入开销更小。流式解析(JsonReader)不依赖缩进，旧备份兼容。
 			writer.beginObject();
 			writer.name("format").value(SNAPSHOT_FORMAT);
 			writer.name("version").value(SNAPSHOT_VERSION);
