@@ -6,6 +6,22 @@
 
 ## 版本更新
 
+### V1.8版本修改
+
+1、功能增强
+- 看板数据支持「导出看板备份 / 导入看板备份」：可回读的 JSON 快照，用于复测查看、审计回溯
+- 导出为全量快照（不受当前搜索/过滤影响）：每行元数据 + 原始请求/响应完整报文 + 每个 Session 的请求/响应报文与绕过状态（报文 Base64 编码）
+- 导入 = 按 Session 名字匹配当前配置 → 覆盖恢复（解析校验通过后才清空重建，失败自动中止不清空）；恢复后可右键发 Repeater 复测、比对响应
+- 涉及代码：`DataExporter.java`（`createSnapshot`）、`DataImporter.java`（新增，覆盖恢复）、`CenterPanel.java`（两个按钮 + 后台恢复 + EDT 刷新）
+
+2、界面优化
+- 看板工具栏新增「导出看板备份」「导入看板备份」按钮；导入含覆盖确认与「分析运行中」红字警告
+- 导入结果弹窗汇总：恢复行数 / 会话结果数 / 未匹配会话列表（最多 10 个 + 总数）
+
+3、版本与构建
+- 迭代版本号 1.7 → 1.8（pom.xml、BappManifest.bmf、打包产物同步更新）
+- 打包产物：`target/auth_analyzer_modify-1.8.jar`、`target/auth_analyzer_modify-1.8-jar-with-dependencies.jar`（Burp 加载用）
+
 ### V1.7版本修改
 
 1、功能增强
@@ -328,4 +344,5 @@ For instance, we don’t want to process a static JavaScript file because it is 
 * Save to file and load from file current configuration
 * Search function in repeated requests
 * Wildcard `{%}` support in table search (matches any chars, e.g. `/api/reports/authorized/{%}/html`)
+* Board backup snapshot export / import (JSON, full restore incl. request/response messages, for re-testing and audit traceback)
 * Semi Automated Authoriztaion Testing

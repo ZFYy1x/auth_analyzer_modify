@@ -6,8 +6,11 @@ import java.awt.Component;
 import java.awt.FlowLayout;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.File;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -17,6 +20,7 @@ import javax.swing.BoxLayout;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
@@ -39,6 +43,7 @@ import javax.swing.event.RowSorterEvent;
 import javax.swing.event.RowSorterListener;
 import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import com.protect7.authanalyzer.entities.AnalyzerRequestResponse;
 import com.protect7.authanalyzer.entities.OriginalRequestResponse;
 import com.protect7.authanalyzer.entities.Session;
@@ -50,6 +55,9 @@ import com.protect7.authanalyzer.gui.util.RequestTableModel;
 import com.protect7.authanalyzer.gui.util.RequestTableModel.Column;
 import com.protect7.authanalyzer.util.BypassConstants;
 import com.protect7.authanalyzer.util.CurrentConfig;
+import com.protect7.authanalyzer.util.DataExporter;
+import com.protect7.authanalyzer.util.DataImporter;
+import com.protect7.authanalyzer.util.DataImporter.ImportResult;
 import com.protect7.authanalyzer.util.GenericHelper;
 import com.protect7.authanalyzer.montoya.HttpExchange;
 import burp.BurpExtender;
@@ -187,7 +195,15 @@ public class CenterPanel extends JPanel {
 			});
 		});
 		tableConfigPanel.add(exportDataButton);
-		
+
+		JButton exportBackupButton = new JButton("导出看板备份");
+		exportBackupButton.addActionListener(e -> exportBoardBackup(exportBackupButton));
+		tableConfigPanel.add(exportBackupButton);
+
+		JButton importBackupButton = new JButton("导入看板备份");
+		importBackupButton.addActionListener(e -> importBoardBackup(importBackupButton));
+		tableConfigPanel.add(importBackupButton);
+
 		JButton copyUrlsButton = new JButton("去重复制URL");
 		copyUrlsButton.addActionListener(e -> copyUrlsToClipboard());
 		tableConfigPanel.add(copyUrlsButton);
@@ -665,6 +681,147 @@ public class CenterPanel extends JPanel {
 		return -1;
 	}
 	
+	// ======================= 看板数据备份：导出 / 导入 =======================
+
+	// 导出全量看板数据为可回读的 JSON 备份（不受当前搜索/过滤影响）
+	private void exportBoardBackup(JButton button) {
+		if (tableModel == null || tableModel.getRowCount() == 0) {
+			JOptionPane.showMessageDialog(this, "当前没有可导出的看板数据。", "导出看板备份", JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+		JFileChooser chooser = new JFileChooser();
+		chooser.setFileFilter(new FileNameExtensionFilter("AuthAnalyzer 看板备份 (*.json)", "json"));
+		chooser.setSelectedFile(new File(
+				"AuthAnalyzer_Board_Backup_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".json"));
+		int status = chooser.showSaveDialog(this);
+		if (status != JFileChooser.APPROVE_OPTION) {
+			return;
+		}
+		File file = chooser.getSelectedFile();
+		if (file != null && !file.getName().toLowerCase().endsWith(".json")) {
+			file = new File(file.getAbsolutePath() + ".json");
+		}
+		final File target = file;
+		button.setIcon(loaderImageIcon);
+		button.setEnabled(false);
+		CompletableFuture.runAsync(() -> {
+			boolean success = DataExporter.getDataExporter().createSnapshot(target,
+					tableModel.getOriginalRequestResponseList(), config.getSessions());
+			SwingUtilities.invokeLater(() -> {
+				button.setIcon(null);
+				button.setEnabled(true);
+				if (success) {
+					JOptionPane.showMessageDialog(this, "看板备份已导出（共 "
+							+ tableModel.getRowCount() + " 行）:\n" + target.getAbsolutePath(), "导出看板备份",
+							JOptionPane.INFORMATION_MESSAGE);
+				} else {
+					JOptionPane.showMessageDialog(this, "导出看板备份失败，详情见 Burp 错误日志。", "导出看板备份",
+							JOptionPane.ERROR_MESSAGE);
+				}
+			});
+		}).exceptionally(throwable -> {
+			SwingUtilities.invokeLater(() -> {
+				button.setIcon(null);
+				button.setEnabled(true);
+				JOptionPane.showMessageDialog(this, "导出看板备份异常: " + throwable.getMessage(), "导出看板备份",
+						JOptionPane.ERROR_MESSAGE);
+			});
+			return null;
+		});
+	}
+
+	// 从备份 JSON 覆盖恢复看板数据（会先清空当前看板）
+	private void importBoardBackup(JButton button) {
+		JFileChooser chooser = new JFileChooser();
+		chooser.setFileFilter(new FileNameExtensionFilter("AuthAnalyzer 看板备份 (*.json)", "json"));
+		int status = chooser.showOpenDialog(this);
+		if (status != JFileChooser.APPROVE_OPTION) {
+			return;
+		}
+		File file = chooser.getSelectedFile();
+		if (file == null || !file.exists()) {
+			JOptionPane.showMessageDialog(this, "备份文件不存在。", "导入看板备份", JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+		String runningWarning = "";
+		if (config.isRunning()) {
+			runningWarning = "<br><font color='red'>⚠ 分析仍在运行，导入期间新到达的请求可能与恢复数据交错，强烈建议先停止分析再导入。</font>";
+		}
+		int confirm = JOptionPane.showConfirmDialog(this,
+				"<html>将从备份<strong>覆盖恢复</strong>看板数据。<br>导入前会<strong>清空当前看板</strong>（含所有会话结果），请确认。<br><br>"
+						+ "备份文件: " + escapeHtml(file.getAbsolutePath()) + runningWarning + "</html>",
+				"导入看板备份", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+		if (confirm != JOptionPane.OK_OPTION) {
+			return;
+		}
+		button.setIcon(loaderImageIcon);
+		button.setEnabled(false);
+		CompletableFuture.runAsync(() -> {
+			ImportResult result = DataImporter.restore(file, config, tableModel);
+			SwingUtilities.invokeLater(() -> {
+				button.setIcon(null);
+				button.setEnabled(true);
+				if (result.error != null) {
+					JOptionPane.showMessageDialog(this,
+							"导入失败，当前看板数据未被改动。<br>原因: " + escapeHtml(result.error), "导入看板备份",
+							JOptionPane.ERROR_MESSAGE);
+					return;
+				}
+				refreshTableAfterDataChange();
+				StringBuilder message = new StringBuilder("<html>看板已从备份恢复：<br>");
+				message.append("· 恢复行数: ").append(result.restoredRows).append(" / ").append(result.totalRows).append("<br>");
+				message.append("· 恢复会话结果: ").append(result.matchedSessionEntries);
+				message.append("，跳过（会话未匹配）: ").append(result.skippedSessionEntries).append("<br>");
+				if (result.skippedInvalidRows > 0) {
+					message.append("· 跳过无效行: ").append(result.skippedInvalidRows).append("<br>");
+				}
+				if (!result.unknownSessions.isEmpty()) {
+					message.append("<br>⚠ 以下备份会话在当前配置中不存在，其数据已跳过：<br>");
+					for (int i = 0; i < result.unknownSessions.size() && i < 10; i++) {
+						message.append("· ").append(escapeHtml(result.unknownSessions.get(i))).append("<br>");
+					}
+					if (result.unknownSessions.size() > 10) {
+						message.append("· ... 共 ").append(result.unknownSessions.size()).append(" 个<br>");
+					}
+				}
+				message.append("</html>");
+				JOptionPane.showMessageDialog(this, message.toString(), "导入看板备份",
+						JOptionPane.INFORMATION_MESSAGE);
+			});
+		}).exceptionally(throwable -> {
+			SwingUtilities.invokeLater(() -> {
+				button.setIcon(null);
+				button.setEnabled(true);
+				JOptionPane.showMessageDialog(this, "导入看板备份异常: " + throwable.getMessage(), "导入看板备份",
+						JOptionPane.ERROR_MESSAGE);
+			});
+			return null;
+		});
+	}
+
+	// 导入完成后重建搜索索引并刷新表格（含过滤/排序结果）
+	private void refreshTableAfterDataChange() {
+		try {
+			if (sorter != null) {
+				sorter.rebuildIndex();
+			}
+			tableModel.fireTableDataChanged();
+			if (sorter != null) {
+				sorter.sort();
+			}
+			updateTableFilterInfo();
+			table.revalidate();
+			table.repaint();
+		} catch (Exception ignore) {}
+	}
+
+	private String escapeHtml(String text) {
+		if (text == null) {
+			return "";
+		}
+		return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+	}
+
 	private void showTableFilterDialog(Component parent) {
 		JPanel inputPanel = new JPanel();
 		inputPanel.setLayout(new BoxLayout(inputPanel, BoxLayout.PAGE_AXIS));

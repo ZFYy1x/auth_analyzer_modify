@@ -1,16 +1,25 @@
 package com.protect7.authanalyzer.util;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.Date;
 import java.util.EnumSet;
+import com.google.gson.stream.JsonWriter;
 import com.protect7.authanalyzer.entities.AnalyzerRequestResponse;
 import com.protect7.authanalyzer.entities.OriginalRequestResponse;
 import com.protect7.authanalyzer.entities.Session;
 import com.protect7.authanalyzer.montoya.HttpExchange;
 import com.protect7.authanalyzer.montoya.MontoyaUtils;
+
+import burp.api.montoya.http.HttpService;
 
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -170,6 +179,90 @@ public class DataExporter {
 			return false;
 		}
 		return true;
+	}
+
+	public static final String SNAPSHOT_FORMAT = "AuthAnalyzerBoardBackup";
+	public static final int SNAPSHOT_VERSION = 1;
+
+	/**
+	 * 导出可回读的"看板备份"JSON 快照。
+	 * 与 HTML/XML 报告不同，该快照保留恢复所需的全量信息：
+	 * 每一行的元数据 + 原始请求/响应报文 + 每个 Session 对应的请求/响应报文与绕过状态，
+	 * 请求/响应报文一律 Base64 编码为字符串，保证二进制安全。
+	 */
+	public boolean createSnapshot(File file, ArrayList<OriginalRequestResponse> originalRequestResponseList,
+			ArrayList<Session> sessions) {
+		try (JsonWriter writer = new JsonWriter(
+				new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
+			writer.setIndent("  ");
+			writer.beginObject();
+			writer.name("format").value(SNAPSHOT_FORMAT);
+			writer.name("version").value(SNAPSHOT_VERSION);
+			writer.name("exportedAt").value(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
+			writer.name("sessionNames");
+			writer.beginArray();
+			for (Session session : sessions) {
+				writer.value(session.getName());
+			}
+			writer.endArray();
+			writer.name("rows");
+			writer.beginArray();
+			ArrayList<OriginalRequestResponse> sortedRows = new ArrayList<OriginalRequestResponse>(originalRequestResponseList);
+			Collections.sort(sortedRows);
+			for (OriginalRequestResponse requestResponse : sortedRows) {
+				HttpExchange exchange = requestResponse.getRequestResponse();
+				HttpService service = exchange == null ? null : exchange.getHttpService();
+				writer.beginObject();
+				writer.name("id").value(requestResponse.getId());
+				writer.name("comment").value(requestResponse.getComment());
+				writer.name("marked").value(requestResponse.isMarked());
+				writer.name("infoText").value(requestResponse.getInfoText());
+				HttpRequest requestInfo = exchange == null ? null : exchange.getRequest();
+				writer.name("method").value(requestInfo == null ? null : requestInfo.method());
+				writer.name("url").value(requestResponse.getUrl());
+				writer.name("statusCode").value(requestResponse.getStatusCode());
+				writer.name("responseContentLength").value(requestResponse.getResponseContentLength());
+				writer.name("host").value(service == null ? null : service.host());
+				writer.name("port").value(service == null ? 0 : service.port());
+				writer.name("secure").value(service != null && service.secure());
+				writer.name("requestB64").value(base64OrNull(exchange == null ? null : exchange.getRequestBytes()));
+				writer.name("responseB64").value(base64OrNull(exchange == null ? null : exchange.getResponseBytes()));
+				writer.name("sessionData");
+				writer.beginArray();
+				for (Session session : sessions) {
+					AnalyzerRequestResponse analyzerRequestResponse = session.getRequestResponseMap()
+							.get(requestResponse.getId());
+					if (analyzerRequestResponse == null) {
+						continue;
+					}
+					HttpExchange sessionExchange = analyzerRequestResponse.getRequestResponse();
+					writer.beginObject();
+					writer.name("sessionName").value(session.getName());
+					writer.name("statusName").value(
+							analyzerRequestResponse.getStatus() == null ? null : analyzerRequestResponse.getStatus().name());
+					writer.name("infoText").value(analyzerRequestResponse.getInfoText());
+					writer.name("statusCode").value(analyzerRequestResponse.getStatusCode());
+					writer.name("responseContentLength").value(analyzerRequestResponse.getResponseContentLength());
+					writer.name("requestB64")
+							.value(base64OrNull(sessionExchange == null ? null : sessionExchange.getRequestBytes()));
+					writer.name("responseB64")
+							.value(base64OrNull(sessionExchange == null ? null : sessionExchange.getResponseBytes()));
+					writer.endObject();
+				}
+				writer.endArray();
+				writer.endObject();
+			}
+			writer.endArray();
+			writer.endObject();
+		} catch (IOException e) {
+			MontoyaUtils.logError("Error. Can not write board snapshot to JSON file. " + e.getMessage());
+			return false;
+		}
+		return true;
+	}
+
+	private String base64OrNull(byte[] bytes) {
+		return bytes == null ? null : Base64.getEncoder().encodeToString(bytes);
 	}
 
 	private String encodeHTML(String text) {
